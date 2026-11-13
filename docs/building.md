@@ -71,14 +71,12 @@ cargo run -p shirabe-plugin --bin shirabe -- --backend dummy
 | `check` | push、pull request | `cargo fmt`、`cargo clippy`、`cargo test` |
 | `bundle (windows-x64)` | `check` の成功後 | VST3 / CLAP / スタンドアロンのビルド、pluginval による VST3 検証 |
 | `bundle (linux-x64)` | `check` の成功後 | VST3 / CLAP / スタンドアロンのビルド、pluginval による VST3 検証 |
-| `bundle (macos-arm64)` | タグの push、または手動実行で `macos` を指定したとき | VST3 / CLAP / スタンドアロンのビルド |
+| `bundle (macos-arm64)` | `check` の成功後 | VST3 / CLAP / スタンドアロンのビルド |
 
-macOS のランナーは非公開リポジトリでは消費時間が多いため、通常の push では実行しません。
-
-手動で macOS を含めてビルドするには、次のコマンドを実行します。
+手動で CI を実行するには、次のコマンドを実行します。
 
 ```sh
-gh workflow run CI -f macos=true
+gh workflow run CI
 ```
 
 ## 依存関係の固定

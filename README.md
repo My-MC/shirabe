@@ -33,7 +33,7 @@ GitHub Actions の各実行結果の Artifacts から、プラットフォーム
 |---|---|
 | `shirabe-windows-x64` | `Shirabe Meter Suite.vst3`、`Shirabe Meter Suite.clap`、`shirabe.exe` |
 | `shirabe-linux-x64` | `Shirabe Meter Suite.vst3`、`Shirabe Meter Suite.clap`、`shirabe` |
-| `shirabe-macos-arm64` | タグ付きビルドまたは手動実行時のみ作成されます |
+| `shirabe-macos-arm64` | `Shirabe Meter Suite.vst3`、`Shirabe Meter Suite.clap`、`shirabe`（署名なし） |
 
 ## インストール（Windows）
 

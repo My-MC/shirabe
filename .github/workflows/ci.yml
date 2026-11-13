@@ -6,11 +6,6 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
-    inputs:
-      macos:
-        description: "Also build macOS (uses 10x Actions minutes on private repositories)"
-        type: boolean
-        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -30,15 +25,11 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
-      # macOS runners cost 10x minutes on private repositories: build them only for tags or on request.
       - name: Plan bundle targets
         id: plan
         shell: bash
         run: |
-          targets='{"name":"windows-x64","os":"windows-2022","exe":"shirabe.exe"},{"name":"linux-x64","os":"ubuntu-22.04","exe":"shirabe"}'
-          if [[ "${{ github.ref_type }}" == "tag" || "${{ inputs.macos }}" == "true" ]]; then
-            targets+=',{"name":"macos-arm64","os":"macos-latest","exe":"shirabe"}'
-          fi
+          targets='{"name":"windows-x64","os":"windows-2022","exe":"shirabe.exe"},{"name":"linux-x64","os":"ubuntu-22.04","exe":"shirabe"},{"name":"macos-arm64","os":"macos-latest","exe":"shirabe"}'
           echo "matrix={\"include\":[${targets}]}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
       - name: Install Linux build dependencies
