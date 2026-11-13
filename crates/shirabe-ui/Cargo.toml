@@ -1,0 +1,14 @@
+[package]
+name = "shirabe-ui"
+description = "Meter widgets, scales and themes for the Shirabe meter suite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+# Only used for its `egui` re-export, so the widget crate always matches the editor's egui version.
+nih_plug_egui.workspace = true

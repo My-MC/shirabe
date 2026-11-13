@@ -1,0 +1,3 @@
+# Metadata for `cargo xtask bundle`.
+[shirabe-plugin]
+name = "Shirabe Meter Suite"

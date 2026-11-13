@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/shirabe-dsp",
+    "crates/shirabe-ui",
+    "crates/shirabe-plugin",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+authors = ["The Shirabe contributors"]
+repository = "https://github.com/My-MC/shirabe"
+
+[workspace.dependencies]
+# nih-plug is not published on crates.io. Pin an exact commit so builds are reproducible.
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "de421011f41a6d10fc8c7a6084e4f4dee0143683" }
+nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "de421011f41a6d10fc8c7a6084e4f4dee0143683" }
+nih_plug_xtask = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "de421011f41a6d10fc8c7a6084e4f4dee0143683" }
+
+shirabe-dsp = { path = "crates/shirabe-dsp" }
+shirabe-ui = { path = "crates/shirabe-ui" }
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = "none"

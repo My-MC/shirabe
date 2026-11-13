@@ -1,0 +1,14 @@
+[package]
+name = "shirabe-dsp"
+description = "Real-time audio measurement primitives for the Shirabe meter suite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license = "MIT OR Apache-2.0"
+keywords = ["audio", "dsp", "meter", "loudness"]
+categories = ["multimedia::audio"]
+
+# This crate must stay independent of any plugin framework or GUI toolkit.
+[dependencies]

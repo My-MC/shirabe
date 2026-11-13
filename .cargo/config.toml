@@ -1,0 +1,4 @@
+[alias]
+# Build the bundler in release mode so serde is not compiled twice when bundling release builds.
+xtask = "run --package xtask --release --"
+xtask-debug = "run --package xtask --"

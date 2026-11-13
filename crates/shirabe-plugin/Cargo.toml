@@ -1,0 +1,26 @@
+[package]
+name = "shirabe-plugin"
+description = "Shirabe Meter Suite: VST3/CLAP plugin and standalone application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "shirabe_plugin"
+# `cdylib` is the plugin; `lib` is used by the standalone binary.
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+name = "shirabe"
+path = "src/main.rs"
+
+[dependencies]
+# `assert_process_allocs` aborts on audio-thread allocations in debug builds only.
+nih_plug = { workspace = true, features = ["standalone", "assert_process_allocs"] }
+nih_plug_egui.workspace = true
+shirabe-dsp.workspace = true
+shirabe-ui.workspace = true
