@@ -53,8 +53,8 @@ impl Plugin for Shirabe {
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    // The first layout is the default. 7.1 is not offered yet because the host-side speaker
-    // arrangement for eight channels is not the common 7.1 layout.
+    // The first layout is the default. Surround layouts are planned for a later release; the
+    // channel roles in `shirabe_dsp::channel` already model them.
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
         AudioIOLayout {
             main_input_channels: NonZeroU32::new(2),
@@ -65,11 +65,6 @@ impl Plugin for Shirabe {
         AudioIOLayout {
             main_input_channels: NonZeroU32::new(1),
             main_output_channels: NonZeroU32::new(1),
-            ..AudioIOLayout::const_default()
-        },
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(6),
-            main_output_channels: NonZeroU32::new(6),
             ..AudioIOLayout::const_default()
         },
     ];
@@ -168,7 +163,6 @@ impl ClapPlugin for Shirabe {
         ClapFeature::Utility,
         ClapFeature::Mono,
         ClapFeature::Stereo,
-        ClapFeature::Surround,
     ];
 }
 
