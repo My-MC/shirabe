@@ -10,7 +10,7 @@ pub mod theme;
 pub use nih_plug_egui::egui;
 
 pub use bar::{draw_level_bar, draw_marker, draw_scale_labels};
-pub use scale::MeterScale;
+pub use scale::{MeterScale, ScaleLaw, TickLabels};
 pub use theme::{zone_at, Theme, Zone};
 
 /// Rounds to one decimal and turns `-0.0` into `0.0`, so read-outs never show "-0.0".

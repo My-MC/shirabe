@@ -128,6 +128,10 @@ pub struct SharedMeters {
     active_channels: AtomicUsize,
     sample_rate: AtomicF32,
     reset_requested: AtomicBool,
+    /// Whether the integrated loudness and loudness range are running (editor writes).
+    integrating: AtomicBool,
+    /// Measured programme duration in seconds since the last reset (audio thread writes).
+    pub programme_seconds: AtomicF32,
     /// Number of processed blocks; lets the editor tell whether audio is running.
     pub blocks: AtomicU64,
 }
@@ -141,6 +145,8 @@ impl SharedMeters {
             active_channels: AtomicUsize::new(2),
             sample_rate: AtomicF32::new(0.0),
             reset_requested: AtomicBool::new(false),
+            integrating: AtomicBool::new(true),
+            programme_seconds: AtomicF32::new(0.0),
             blocks: AtomicU64::new(0),
         }
     }
@@ -184,6 +190,16 @@ impl SharedMeters {
     /// Asks the audio thread to clear the maxima and the programme loudness (editor).
     pub fn request_reset(&self) {
         self.reset_requested.store(true, Ordering::Relaxed);
+    }
+
+    /// Starts or pauses the integrated loudness and loudness range (editor).
+    pub fn set_integrating(&self, integrating: bool) {
+        self.integrating.store(integrating, Ordering::Relaxed);
+    }
+
+    /// Whether the integrated loudness and loudness range are running.
+    pub fn integrating(&self) -> bool {
+        self.integrating.load(Ordering::Relaxed)
     }
 
     /// Consumes a pending reset request (audio thread).

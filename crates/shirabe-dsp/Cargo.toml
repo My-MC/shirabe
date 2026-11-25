@@ -16,3 +16,5 @@ categories = ["multimedia::audio"]
 [dev-dependencies]
 # Independent reference implementation, only used to cross-check our results in tests.
 ebur128 = "0.1.11"
+# Reads the official EBU test set in the opt-in conformance test (not redistributed).
+hound = "3.5"

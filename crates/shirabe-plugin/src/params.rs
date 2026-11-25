@@ -8,24 +8,27 @@ use std::sync::Arc;
 use nih_plug::prelude::*;
 use nih_plug_egui::EguiState;
 
-/// Loudness targets. Variant names are stored in projects: never rename or reorder them.
+/// Loudness targets. Variant IDs are stored in projects: never change them. Values and their
+/// sources are listed in `docs/standards.md`.
 #[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoudnessTarget {
-    /// Japanese broadcast (ARIB TR-B32): -24 LKFS, -1 dBTP.
+    /// Japanese broadcast (ARIB TR-B32 §2.1.4, §2.1.5, §2.2.4): -24 LKFS ±1 dB, -1 dBTP.
     #[id = "arib"]
     #[name = "ARIB TR-B32 (-24 LKFS)"]
     AribTrB32,
-    /// European broadcast (EBU R128): -23 LUFS, -1 dBTP.
+    /// European broadcast (EBU R 128 h, m): -23 LUFS, ±1.0 LU where the target cannot be met
+    /// in practice (e.g. live), -1 dBTP.
     #[id = "ebu"]
     #[name = "EBU R128 (-23 LUFS)"]
     EbuR128,
-    /// North American broadcast (ATSC A/85): -24 LKFS, -2 dBTP.
+    /// North American broadcast (ATSC A/85 §6): -24 LKFS ±2 dB, true peak below -2 dBTP.
     #[id = "atsc"]
     #[name = "ATSC A/85 (-24 LKFS)"]
     AtscA85,
-    /// Typical music streaming normalization: -14 LUFS, -1 dBTP.
+    /// Spotify loudness normalization (Spotify for Artists): -14 LUFS, true peak below -1 dBTP.
+    /// Spotify publishes no tolerance.
     #[id = "stream14"]
-    #[name = "Streaming (-14 LUFS)"]
+    #[name = "Spotify (-14 LUFS)"]
     Streaming14,
 }
 
@@ -47,14 +50,48 @@ impl LoudnessTarget {
         }
     }
 
-    /// Tolerance around the target in LU, for colouring read-outs.
-    pub fn tolerance(self) -> f32 {
+    /// Permitted tolerance around the target in LU, if the document defines one.
+    pub fn tolerance(self) -> Option<f32> {
         match self {
-            Self::EbuR128 => 1.0,
-            Self::AtscA85 => 2.0,
-            _ => 1.0,
+            Self::AribTrB32 | Self::EbuR128 => Some(1.0),
+            Self::AtscA85 => Some(2.0),
+            Self::Streaming14 => None,
         }
     }
+
+    /// Unit name used by the document for absolute loudness values.
+    pub fn unit(self) -> &'static str {
+        match self {
+            Self::AribTrB32 | Self::AtscA85 => "LKFS",
+            Self::EbuR128 | Self::Streaming14 => "LUFS",
+        }
+    }
+}
+
+/// Loudness scale (EBU Tech 3341 §2.7). Variant IDs are stored in projects: never change them.
+#[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoudnessScale {
+    /// -18 to +9 LU around the target (default).
+    #[id = "ebu9"]
+    #[name = "EBU +9"]
+    Ebu9,
+    /// -36 to +18 LU around the target.
+    #[id = "ebu18"]
+    #[name = "EBU +18"]
+    Ebu18,
+}
+
+/// Loudness unit: absolute or relative to the target (EBU Tech 3341 §2.7, §2.8).
+#[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoudnessUnit {
+    /// LUFS (LKFS for presets whose document uses that name).
+    #[id = "abs"]
+    #[name = "Absolute"]
+    Absolute,
+    /// LU, 0 LU = target.
+    #[id = "rel"]
+    #[name = "Relative (LU)"]
+    Relative,
 }
 
 /// Meter shown in the level section. Variant IDs are stored in projects: never change them.
@@ -68,10 +105,14 @@ pub enum LevelMode {
     #[id = "ppm1"]
     #[name = "PPM Type I"]
     PpmTypeI,
-    /// Type II quasi-peak programme meter (IEC 60268-10).
+    /// Type IIb quasi-peak programme meter with the EBU scale (IEC 60268-10, EBU Tech 3205).
     #[id = "ppm2"]
-    #[name = "PPM Type II"]
+    #[name = "PPM Type IIb (EBU)"]
     PpmTypeII,
+    /// Type IIa quasi-peak programme meter with the BBC scale 1 to 7 (IEC 60268-10).
+    #[id = "ppm2bbc"]
+    #[name = "PPM Type IIa (BBC)"]
+    PpmTypeIIBbc,
 }
 
 /// All parameters of the plugin.
@@ -105,6 +146,14 @@ pub struct ShirabeParams {
     #[id = "ld_tgt"]
     pub loudness_target: EnumParam<LoudnessTarget>,
 
+    /// Loudness scale.
+    #[id = "ld_scale"]
+    pub loudness_scale: EnumParam<LoudnessScale>,
+
+    /// Loudness unit.
+    #[id = "ld_unit"]
+    pub loudness_unit: EnumParam<LoudnessUnit>,
+
     /// Reset integrated loudness, loudness range and maxima when the host transport starts.
     #[id = "auto_rst"]
     pub auto_reset: BoolParam,
@@ -113,7 +162,7 @@ pub struct ShirabeParams {
 impl Default for ShirabeParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(760, 460),
+            editor_state: EguiState::from_size(820, 500),
 
             osc_enabled: BoolParam::new("Test Oscillator", false),
 
@@ -154,6 +203,10 @@ impl Default for ShirabeParams {
             level_mode: EnumParam::new("Level Meter", LevelMode::Vu),
 
             loudness_target: EnumParam::new("Loudness Target", LoudnessTarget::AribTrB32),
+
+            loudness_scale: EnumParam::new("Loudness Scale", LoudnessScale::Ebu9),
+
+            loudness_unit: EnumParam::new("Loudness Unit", LoudnessUnit::Absolute),
 
             auto_reset: BoolParam::new("Reset on Play", true),
         }

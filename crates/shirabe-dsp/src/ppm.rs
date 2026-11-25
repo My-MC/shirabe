@@ -14,7 +14,7 @@ use std::f64::consts::TAU;
 pub enum PpmType {
     /// Type I: integration time 5 ms, return 20 dB in 1.5 s.
     TypeI,
-    /// Type II: a 10 ms burst reads -2.5 dB, return 24 dB in 2.8 s.
+    /// Type II (EBU Tech 3205): a 10 ms burst reads -2 dB, return 24 dB in 2.8 s.
     TypeII,
 }
 
@@ -23,7 +23,7 @@ impl PpmType {
     fn charge_rates(self) -> (f64, f64) {
         match self {
             Self::TypeI => (326.648, 697.108),
-            Self::TypeII => (102.213, 715.243),
+            Self::TypeII => (140.17, 704.062),
         }
     }
 

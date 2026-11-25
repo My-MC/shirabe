@@ -31,8 +31,8 @@ pub fn draw_level_bar(
             let top = bottom - theme.segment_height;
             // Colour by the dB value at the segment centre.
             let centre_pos = (i as f32 + 0.5) / count as f32;
-            let zone = zone_at(zones, db_at(scale, centre_pos));
-            let lit = centre_pos <= level_pos && level_pos > 0.0;
+            let zone = zone_at(zones, scale.value_at(centre_pos));
+            let lit = centre_pos <= level_pos && level_db > scale.min;
             let colour = if lit { zone.lit } else { zone.unlit };
             painter.rect_filled(
                 Rect::from_min_max(pos2(inner.left(), top), pos2(inner.right(), bottom)),
@@ -50,7 +50,7 @@ pub fn draw_level_bar(
         );
     }
 
-    if hold_db > scale.min_db() {
+    if hold_db > scale.min {
         let y = inner.bottom() - scale.position(hold_db) * height;
         painter.line_segment(
             [pos2(inner.left(), y), pos2(inner.right(), y)],
@@ -60,15 +60,22 @@ pub fn draw_level_bar(
 }
 
 /// Draws tick labels for `scale` right-aligned against `rect.right()`, spanning its height.
-pub fn draw_scale_labels(painter: &Painter, rect: Rect, scale: &MeterScale, theme: &Theme) {
+/// `label_offset` is added to the label values (for example to show an LU scale in LUFS).
+pub fn draw_scale_labels(
+    painter: &Painter,
+    rect: Rect,
+    scale: &MeterScale,
+    theme: &Theme,
+    label_offset: f32,
+) {
     let inner = rect.shrink2(crate::egui::vec2(0.0, 1.0));
     let font = FontId::monospace(10.0);
-    for &tick in scale.ticks {
+    for (index, &tick) in scale.ticks.iter().enumerate() {
         let y = inner.bottom() - scale.position(tick) * inner.height();
         painter.text(
             pos2(rect.right() - 3.0, y),
             Align2::RIGHT_CENTER,
-            scale.label(tick),
+            scale.label(index, label_offset),
             font.clone(),
             theme.text_dim,
         );
@@ -93,31 +100,4 @@ pub fn draw_marker(
         [pos2(rect.left() - 3.0, y), pos2(rect.right() + 3.0, y)],
         Stroke::new(1.5_f32, colour),
     );
-}
-
-/// Inverse of [`MeterScale::position`] by bisection (only used for colouring segments).
-fn db_at(scale: &MeterScale, position: f32) -> f32 {
-    let (mut lo, mut hi) = (scale.min_db(), scale.max_db());
-    for _ in 0..24 {
-        let mid = 0.5 * (lo + hi);
-        if scale.position(mid) < position {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    0.5 * (lo + hi)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn db_at_inverts_position() {
-        let s = MeterScale::PEAK_DBFS;
-        for db in [-50.0f32, -20.0, -9.0, -3.0, -0.5] {
-            assert!((db_at(&s, s.position(db)) - db).abs() < 0.01, "{db}");
-        }
-    }
 }

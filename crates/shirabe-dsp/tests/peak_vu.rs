@@ -46,7 +46,8 @@ fn accuracy_across_frequencies_and_phases() {
                 lo = lo.min(err);
                 hi = hi.max(err);
                 assert!(
-                    (-0.5..=0.2).contains(&err),
+                    // EBU Tech 3341 Table 1, cases 15-23: +0.2 / -0.4 dB.
+                    (-0.4..=0.2).contains(&err),
                     "sr={sr} f={freq} phase={phase:.2}: error {err:.3} dB"
                 );
             }

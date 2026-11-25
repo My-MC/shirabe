@@ -7,7 +7,7 @@ VST3 / CLAP プラグインと、DAW なしで動くスタンドアロンアプ�
 > [!NOTE]
 > 現在はフェーズ 1（規格に沿った基本メーター）の開発中です。
 > サンプルピーク、トゥルーピーク、VU、PPM、ラウドネスを表示できます。リサージュなどのステレオ解析はフェーズ 2 で追加します。
-> 計画は [docs/roadmap.md](docs/roadmap.md) を参照してください。
+> 計画は [docs/roadmap.md](docs/roadmap.md)、各メーターが準拠する規格は [docs/standards.md](docs/standards.md) を参照してください。
 
 ## 特長（目標）
 
@@ -24,9 +24,9 @@ VST3 / CLAP プラグインと、DAW なしで動くスタンドアロンアプ�
 |---|---|
 | サンプルピークメーター | モノラル / ステレオの各チャンネル、ピークホールド、リセット可能な最大値表示 |
 | トゥルーピーク | 4 倍オーバーサンプリング（ITU-R BS.1770 Annex 2 を参照）、チャンネルごとの最大値 |
-| VU / PPM | VU（IEC 60268-17 の動特性、0 VU の基準レベルを変更可能）と PPM Type I / Type II（IEC 60268-10）を切り替えて表示 |
-| ラウドネス | Momentary、Short-term、Integrated、LRA と各最大値（ITU-R BS.1770、EBU Tech 3341 / 3342 の合成信号で検証） |
-| 目標値プリセット | ARIB TR-B32、EBU R128、ATSC A/85、配信向け（-14 LUFS） |
+| VU / PPM | VU（電圧比例の目盛りと % 目盛り、0 VU の基準レベルを変更可能）と PPM（Type I、EBU 目盛り、BBC 目盛り）を切り替えて表示 |
+| ラウドネス | Momentary、Short-term、Integrated、LRA と各最大値。EBU +9 / +18 目盛り、LUFS / LU 表示、I と LRA の一時停止（ITU-R BS.1770-5、EBU Tech 3341 / 3342。EBU の公式テスト音源の全ケースで確認） |
+| 目標値プリセット | ARIB TR-B32、EBU R 128、ATSC A/85、Spotify（-14 LUFS） |
 | リセット | ボタン、メーター部のダブルクリック、ホストの再生開始（オン / オフ可能） |
 | テストオシレーター | 入力をサイン波に置き換えて、メーターの校正や動作確認に使えます（初期状態はオフ） |
 | 出力形式 | VST3、CLAP、スタンドアロンアプリ |

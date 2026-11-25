@@ -287,3 +287,62 @@ fn matches_reference_implementation() {
     assert_close("S vs reference", ours.short_term, ref_s, 0.05);
     assert_close("LRA vs reference", ours.range, ref_lra, 0.2);
 }
+
+// --- Behaviour required by EBU Tech 3341 (2023) ------------------------------------------------
+
+/// Tech 3341 case 13 (synthetic): Max M of a 400 ms tone must read its level whatever the
+/// tone's offset, so the momentary window must slide finer than the 100 ms gating hop.
+#[test]
+fn tech3341_case13_max_momentary_any_offset() {
+    for i in 0..20 {
+        let (mut m, a) = stereo(&[(i as f64 * 0.02, -200.0), (0.4, -23.0), (1.0, -200.0)]);
+        run(&mut m, &a, 256);
+        assert_close(
+            &format!("Max M, offset {i}"),
+            m.readout().max_momentary,
+            -23.0,
+            0.1,
+        );
+    }
+}
+
+/// Tech 3341 §2.2: integration of I and LRA can be paused and continued together; M and S
+/// keep running.
+#[test]
+fn pausing_freezes_integrated_and_range() {
+    let (mut m, a) = stereo(&[(10.0, -23.0)]);
+    run(&mut m, &a, 512);
+    let before = m.readout();
+    m.set_integrating(false);
+    let (_, b) = stereo(&[(10.0, -13.0)]);
+    run(&mut m, &b, 512);
+    let after = m.readout();
+    assert_eq!(after.integrated, before.integrated);
+    assert_eq!(after.range, before.range);
+    assert_close("S keeps running", after.short_term, -13.0, 0.1);
+    assert!(
+        (m.programme_seconds() - 10.0).abs() < 0.11,
+        "{}",
+        m.programme_seconds()
+    );
+
+    // Let the momentary window leave the loud part before continuing, so that only the
+    // paused audio is excluded and the result is the plain -23 LUFS programme.
+    let (_, settle) = stereo(&[(1.0, -23.0)]);
+    run(&mut m, &settle, 512);
+    m.set_integrating(true);
+    let (_, c) = stereo(&[(10.0, -23.0)]);
+    run(&mut m, &c, 512);
+    assert_close("I after continue", m.readout().integrated, -23.0, 0.1);
+}
+
+/// Tech 3341 §2.4 needs to know how long the programme has been measured (LRA is flagged as
+/// not stable during the first 60 s).
+#[test]
+fn programme_duration_counts_and_resets() {
+    let (mut m, a) = stereo(&[(5.0, -23.0)]);
+    run(&mut m, &a, 500);
+    assert!((m.programme_seconds() - 5.0).abs() < 0.11);
+    m.reset_programme();
+    assert_eq!(m.programme_seconds(), 0.0);
+}

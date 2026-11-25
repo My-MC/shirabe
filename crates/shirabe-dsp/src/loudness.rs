@@ -142,17 +142,33 @@ pub struct LoudnessMeter {
     weights: [f64; MAX_LOUDNESS_CHANNELS],
     filters: Vec<KWeighting>,
 
-    sub_block_len: usize,
-    sub_block_pos: usize,
-    sub_block_energy: f64,
-    /// Ring of the most recent sub-block energies (mean square, channel weighted).
-    ring: [f64; SUB_BLOCKS_SHORT_TERM],
+    /// Samples per sub-block. Sub-blocks divide the 100 ms hop exactly and are at most 2.5 ms
+    /// long, so the momentary and short-term windows slide in fine steps (Max M / Max S read
+    /// a short tone correctly whatever its position) while the gating blocks keep the exact
+    /// 400 ms length and 100 ms hop of ITU-R BS.1770.
+    sub_len: usize,
+    /// Sub-blocks per 100 ms hop.
+    subs_per_hop: usize,
+    sub_pos: usize,
+    sub_energy: f64,
+    /// Ring of the most recent sub-block energy sums (channel weighted), 3 s long.
+    ring: Vec<f64>,
     ring_pos: usize,
     ring_filled: usize,
+    momentary_sum: f64,
+    short_term_sum: f64,
+    hop_pos: usize,
 
+    integrating: bool,
+    programme_samples: u64,
     integrated_hist: GateHistogram,
     range_hist: GateHistogram,
     readout: LoudnessReadout,
+}
+
+/// Largest divisor of `hop` that is at most `limit` (at least 1).
+fn sub_block_length(hop: usize, limit: usize) -> usize {
+    (1..=limit.max(1)).rev().find(|d| hop % d == 0).unwrap_or(1)
 }
 
 impl LoudnessMeter {
@@ -163,12 +179,18 @@ impl LoudnessMeter {
             channels: 0,
             weights: [0.0; MAX_LOUDNESS_CHANNELS],
             filters: Vec::with_capacity(MAX_LOUDNESS_CHANNELS),
-            sub_block_len: 1,
-            sub_block_pos: 0,
-            sub_block_energy: 0.0,
-            ring: [0.0; SUB_BLOCKS_SHORT_TERM],
+            sub_len: 1,
+            subs_per_hop: 1,
+            sub_pos: 0,
+            sub_energy: 0.0,
+            ring: Vec::new(),
             ring_pos: 0,
             ring_filled: 0,
+            momentary_sum: 0.0,
+            short_term_sum: 0.0,
+            hop_pos: 0,
+            integrating: true,
+            programme_samples: 0,
             integrated_hist: GateHistogram::new(),
             range_hist: GateHistogram::new(),
             readout: LoudnessReadout::default(),
@@ -177,9 +199,8 @@ impl LoudnessMeter {
         meter
     }
 
-    /// Changes the sample rate or channel layout and resets everything. Not real-time safe
-    /// only in the sense that it rebuilds the filters; it does not allocate beyond the
-    /// capacity reserved in [`LoudnessMeter::new`].
+    /// Changes the sample rate or channel layout and resets everything. Allocates the history
+    /// buffer for the sample rate, so call it outside the audio callback.
     pub fn prepare(&mut self, sample_rate: f32, roles: &[ChannelRole]) {
         self.sample_rate = sample_rate.max(1.0) as f64;
         self.channels = roles.len().min(MAX_LOUDNESS_CHANNELS);
@@ -191,7 +212,10 @@ impl LoudnessMeter {
         for _ in 0..self.channels {
             self.filters.push(KWeighting::new(self.sample_rate));
         }
-        self.sub_block_len = (self.sample_rate * 0.1).round().max(1.0) as usize;
+        let hop = (self.sample_rate * 0.1).round().max(1.0) as usize;
+        self.sub_len = sub_block_length(hop, hop / 40);
+        self.subs_per_hop = hop / self.sub_len;
+        self.ring = vec![0.0; SUB_BLOCKS_SHORT_TERM * self.subs_per_hop];
         self.reset();
     }
 
@@ -200,25 +224,45 @@ impl LoudnessMeter {
         for f in &mut self.filters {
             f.reset();
         }
-        self.sub_block_pos = 0;
-        self.sub_block_energy = 0.0;
-        self.ring = [0.0; SUB_BLOCKS_SHORT_TERM];
+        self.sub_pos = 0;
+        self.sub_energy = 0.0;
+        self.ring.fill(0.0);
         self.ring_pos = 0;
         self.ring_filled = 0;
-        self.integrated_hist.clear();
-        self.range_hist.clear();
+        self.momentary_sum = 0.0;
+        self.short_term_sum = 0.0;
+        self.hop_pos = 0;
         self.readout = LoudnessReadout::default();
+        self.reset_programme();
     }
 
-    /// Clears only the integrated loudness, loudness range and maxima (e.g. on transport start),
-    /// keeping the filter state and the momentary / short-term history.
+    /// Clears only the integrated loudness, loudness range, maxima and programme duration
+    /// (e.g. on transport start), keeping the filter state and the momentary / short-term
+    /// history. EBU Tech 3341 requires I and LRA to be reset together.
     pub fn reset_programme(&mut self) {
         self.integrated_hist.clear();
         self.range_hist.clear();
+        self.programme_samples = 0;
         self.readout.integrated = None;
         self.readout.range = None;
         self.readout.max_momentary = None;
         self.readout.max_short_term = None;
+    }
+
+    /// Starts (`true`) or pauses (`false`) the integrated loudness and loudness range together
+    /// (EBU Tech 3341 §2.2). Momentary and short-term loudness keep running.
+    pub fn set_integrating(&mut self, integrating: bool) {
+        self.integrating = integrating;
+    }
+
+    /// Whether the integrated loudness and loudness range are running.
+    pub fn is_integrating(&self) -> bool {
+        self.integrating
+    }
+
+    /// Duration in seconds that has been integrated since the last programme reset.
+    pub fn programme_seconds(&self) -> f64 {
+        self.programme_samples as f64 / self.sample_rate
     }
 
     /// Processes one block. `channels[i]` holds the samples of channel `i`; all slices must have
@@ -229,6 +273,9 @@ impl LoudnessMeter {
             return;
         };
         let len = first.as_ref().len();
+        if self.integrating {
+            self.programme_samples += len as u64;
+        }
 
         for i in 0..len {
             let mut sum = 0.0;
@@ -237,52 +284,76 @@ impl LoudnessMeter {
                 let y = self.filters[ch].process(x);
                 sum += self.weights[ch] * y * y;
             }
-            self.sub_block_energy += sum;
-            self.sub_block_pos += 1;
-            if self.sub_block_pos == self.sub_block_len {
+            self.sub_energy += sum;
+            self.sub_pos += 1;
+            if self.sub_pos == self.sub_len {
                 self.finish_sub_block();
             }
         }
     }
 
     fn finish_sub_block(&mut self) {
-        self.ring[self.ring_pos] = self.sub_block_energy / self.sub_block_len as f64;
-        self.ring_pos = (self.ring_pos + 1) % SUB_BLOCKS_SHORT_TERM;
-        self.ring_filled = (self.ring_filled + 1).min(SUB_BLOCKS_SHORT_TERM);
-        self.sub_block_energy = 0.0;
-        self.sub_block_pos = 0;
+        let n = self.ring.len();
+        let m_len = SUB_BLOCKS_MOMENTARY * self.subs_per_hop;
+        // Slide both windows: add the new sub-block, drop the ones that left each window.
+        let leaving_m = self.ring[(self.ring_pos + n - m_len) % n];
+        let leaving_s = self.ring[self.ring_pos];
+        self.ring[self.ring_pos] = self.sub_energy;
+        self.ring_pos = (self.ring_pos + 1) % n;
+        self.ring_filled = (self.ring_filled + 1).min(n);
+        self.momentary_sum += self.sub_energy - leaving_m;
+        self.short_term_sum += self.sub_energy - leaving_s;
+        self.sub_energy = 0.0;
+        self.sub_pos = 0;
 
-        if let Some(e) = self.window_energy(SUB_BLOCKS_MOMENTARY) {
+        self.hop_pos += 1;
+        let hop_end = self.hop_pos == self.subs_per_hop;
+        if hop_end {
+            self.hop_pos = 0;
+            // Recompute the running sums exactly to stop rounding errors from accumulating.
+            self.momentary_sum = self.window_sum(m_len);
+            self.short_term_sum = self.window_sum(n);
+        }
+
+        if self.ring_filled >= m_len {
+            let e = (self.momentary_sum / (m_len * self.sub_len) as f64).max(0.0);
             let m = energy_to_lufs(e);
             self.readout.momentary = Some(m);
-            self.readout.max_momentary = Some(self.readout.max_momentary.map_or(m, |x| x.max(m)));
-            // Every momentary block (400 ms, 75 % overlap) is a gating block for integration.
-            self.integrated_hist.add(e);
-            self.readout.integrated = self
-                .integrated_hist
-                .gated_mean(RELATIVE_GATE_INTEGRATED_LU)
-                .map(|(m, _)| m);
+            if self.integrating {
+                self.readout.max_momentary =
+                    Some(self.readout.max_momentary.map_or(m, |x| x.max(m)));
+                if hop_end {
+                    // Gating blocks: 400 ms every 100 ms (75 % overlap).
+                    self.integrated_hist.add(e);
+                    self.readout.integrated = self
+                        .integrated_hist
+                        .gated_mean(RELATIVE_GATE_INTEGRATED_LU)
+                        .map(|(m, _)| m);
+                }
+            }
         }
-        if let Some(e) = self.window_energy(SUB_BLOCKS_SHORT_TERM) {
+        if self.ring_filled >= n {
+            let e = (self.short_term_sum / (n * self.sub_len) as f64).max(0.0);
             let s = energy_to_lufs(e);
             self.readout.short_term = Some(s);
-            self.readout.max_short_term = Some(self.readout.max_short_term.map_or(s, |x| x.max(s)));
-            // Short-term values every 100 ms feed the loudness range (EBU Tech 3342).
-            self.range_hist.add(e);
-            self.readout.range = self.loudness_range();
+            if self.integrating {
+                self.readout.max_short_term =
+                    Some(self.readout.max_short_term.map_or(s, |x| x.max(s)));
+                if hop_end {
+                    // Short-term values every 100 ms feed the loudness range (EBU Tech 3342).
+                    self.range_hist.add(e);
+                    self.readout.range = self.loudness_range();
+                }
+            }
         }
     }
 
-    fn window_energy(&self, sub_blocks: usize) -> Option<f64> {
-        if self.ring_filled < sub_blocks {
-            return None;
-        }
-        let mut sum = 0.0;
-        for k in 1..=sub_blocks {
-            let idx = (self.ring_pos + SUB_BLOCKS_SHORT_TERM - k) % SUB_BLOCKS_SHORT_TERM;
-            sum += self.ring[idx];
-        }
-        Some(sum / sub_blocks as f64)
+    /// Sum of the most recent `count` sub-blocks.
+    fn window_sum(&self, count: usize) -> f64 {
+        let n = self.ring.len();
+        (1..=count.min(n))
+            .map(|k| self.ring[(self.ring_pos + n - k) % n])
+            .sum()
     }
 
     fn loudness_range(&self) -> Option<f64> {

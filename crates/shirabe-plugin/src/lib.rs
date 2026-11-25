@@ -223,7 +223,7 @@ impl Plugin for Shirabe {
                     vu.process(channel);
                     readout.vu.store(vu.vu(), Ordering::Relaxed);
                 }
-                LevelMode::PpmTypeI | LevelMode::PpmTypeII => {
+                LevelMode::PpmTypeI | LevelMode::PpmTypeII | LevelMode::PpmTypeIIBbc => {
                     let ppm = if level_mode == LevelMode::PpmTypeI {
                         &mut self.ppm_type_i[index]
                     } else {
@@ -234,7 +234,11 @@ impl Plugin for Shirabe {
                 }
             }
         }
+        self.loudness.set_integrating(self.shared.integrating());
         self.loudness.process(channels);
+        self.shared
+            .programme_seconds
+            .store(self.loudness.programme_seconds() as f32, Ordering::Relaxed);
         self.shared.loudness.store(&self.loudness.readout());
         self.shared.blocks.fetch_add(1, Ordering::Relaxed);
 

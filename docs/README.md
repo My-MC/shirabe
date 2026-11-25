@@ -7,6 +7,7 @@ Shirabe Meter Suite の設計・計画・ビルド手順をまとめたドキュ
 | ドキュメント | 内容 |
 |---|---|
 | [design.md](design.md) | アーキテクチャ、スレッド設計、メーターの仕様、互換性の方針 |
+| [standards.md](standards.md) | 各メーターが準拠する規格・資料と、その対応状況 |
 | [roadmap.md](roadmap.md) | フェーズごとの開発計画と完了条件 |
 | [building.md](building.md) | 開発環境の準備、ビルド、テスト、CI |
 | [testing.md](testing.md) | Linux 上のホストでの動作確認と自動テスト |
