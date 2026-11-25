@@ -38,7 +38,7 @@ Windows 11 での確認結果（2026-11-25）は次のとおりです。
 | VST3 の読み込みとメーター表示（ステレオ） | 成功。テスト信号の L -18.0 / R -24.0 dBFS をそのまま表示 |
 | pluginval（GUI テストを含む、ソフトウェア OpenGL 使用時） | 成功 |
 | スタンドアロン（ダミーバックエンド、テストオシレーター） | 成功 |
-| GPU のない環境でのエディター表示 | 失敗（[#1](https://github.com/My-MC/shirabe/issues/1)） |
+| GPU のない環境でのエディター表示 | 失敗（[#1](https://github.com/My-MC/shirabe/issues/1)）→ フォークで修正済み |
 | スタンドアロンの WASAPI 出力 | 失敗（[#2](https://github.com/My-MC/shirabe/issues/2)） |
 
 ## フェーズ 1：規格準拠の基本メーター
@@ -50,7 +50,6 @@ Windows 11 での確認結果（2026-11-25）は次のとおりです。
 - ホストの再生開始に連動した Integrated のリセット
 - スタンドアロン専用 UI：オーディオデバイスの選択画面、音声ファイルを再生しながらの測定
 - スタンドアロンのオーディオ処理を自前の実装に置き換え、デバイスのサンプルレートと任意のバッファサイズに対応（[#2](https://github.com/My-MC/shirabe/issues/2)）
-- OpenGL 3.2 が使えない環境でもホストを落とさないエディター（[#1](https://github.com/My-MC/shirabe/issues/1)）
 
 完了条件は次のとおりです。
 

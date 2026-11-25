@@ -7,8 +7,6 @@
 #   4. Ardour (headless): render through the plug-in and compare with a bypassed render
 #
 # Environment:
-#   SHIRABE_GL_SHIM   directory prepended to LD_LIBRARY_PATH for the editor tests
-#                     (only needed on X servers without an sRGB-capable GLX config)
 #   PLUGINVAL         path to pluginval (default: pluginval in PATH)
 #   CLAP_VALIDATOR    path to clap-validator (default: clap-validator in PATH)
 #   SKIP_BUNDLE=1     use the existing target/bundled output
@@ -22,9 +20,6 @@ VST3="$HOME/.vst3/$NAME.vst3"
 CLAP="$HOME/.clap/$NAME.clap"
 PLUGINVAL="${PLUGINVAL:-pluginval}"
 CLAP_VALIDATOR="${CLAP_VALIDATOR:-clap-validator}"
-if [ -n "${SHIRABE_GL_SHIM:-}" ]; then
-  export LD_LIBRARY_PATH="$SHIRABE_GL_SHIM${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-fi
 
 failed=""
 step() { printf '\n=== %s\n' "$1"; }
@@ -39,10 +34,7 @@ ln -sfn "$ROOT/target/bundled/$NAME.vst3" "$VST3"
 ln -sfn "$ROOT/target/bundled/$NAME.clap" "$CLAP"
 
 step "clap-validator"
-# Known failures in the plug-in framework's CLAP state handling are tracked in
-# https://github.com/My-MC/shirabe/issues/3 and excluded until it is fixed.
-KNOWN_CLAP_FAILURES='^(state-invalid-random|state-reproducibility-basic|state-reproducibility-binary|state-reproducibility-buffered)$'
-"$CLAP_VALIDATOR" validate --only-failed -x "$KNOWN_CLAP_FAILURES" "$CLAP" || fail clap-validator
+"$CLAP_VALIDATOR" validate --only-failed "$CLAP" || fail clap-validator
 
 step "pluginval"
 if [ -n "${DISPLAY:-}" ]; then gui=""; else gui="--skip-gui-tests"; fi

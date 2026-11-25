@@ -20,7 +20,7 @@ Linux 上のプラグインホストを使って、プラグインの読み込�
 | 手順 | 内容 |
 |---|---|
 | bundle | リリースビルドで VST3 / CLAP を作成し、`~/.vst3` と `~/.clap` にリンクします |
-| clap-validator | CLAP 版を検証します。既知の失敗（[#3](https://github.com/My-MC/shirabe/issues/3)）は除外しています |
+| clap-validator | CLAP 版を検証します |
 | pluginval | VST3 版を strictness 5 で検証します。`DISPLAY` があればエディターのテストも行います |
 | Ardour | ヘッドレスの Ardour で、テスト信号をプラグインに通した書き出しと、プラグインを無効にした書き出しを比較します |
 
@@ -57,21 +57,24 @@ SKIP_BUNDLE=1 tools/host-tests/run.sh
 | `SKIP_BUNDLE` | `1` にすると、ビルドを省略します |
 | `PLUGINVAL` | pluginval の場所（既定は `PATH` 上の `pluginval`） |
 | `CLAP_VALIDATOR` | clap-validator の場所（既定は `PATH` 上の `clap-validator`） |
-| `SHIRABE_GL_SHIM` | エディターのテストのときに `LD_LIBRARY_PATH` の先頭に追加するディレクトリ |
 
 Ardour の作業ファイルは `target/host-tests/` に作られ、実行のたびに作り直されます。
 
-## GPU のない環境での注意
+## GPU のない環境での動作
 
-エディターは OpenGL 3.2 と sRGB 対応のフレームバッファを使います。
+エディターは OpenGL 3.2 で描画します。
 
-Xvfb や VNC の仮想画面と Mesa（llvmpipe）の組み合わせでは sRGB 対応のフレームバッファが提供されないため、エディターを開けません。
+| 環境 | 動作 |
+|---|---|
+| sRGB 対応のフレームバッファがない（Xvfb や VNC と Mesa llvmpipe の組み合わせなど） | sRGB なしの設定で開き直し、通常どおり表示します |
+| OpenGL 3.2 のコンテキストを作れない（GLX のない X サーバー、GPU のない Windows の仮想マシンなど） | ウィンドウは開きますが描画しません。ホストは終了しません |
 
-その場合は、テスト用に sRGB の要求だけを取り除く `libGL` のラッパーを用意し、`SHIRABE_GL_SHIM` で指定します。
+画面のない環境では、次のように Xvfb を使って自動テストを実行できます。
 
-このラッパーはテスト専用で、配布物には含めません。
-
-OpenGL を使えない環境でエディターを開いたときにホストごと終了する問題は [#1](https://github.com/My-MC/shirabe/issues/1) で扱っています。
+```sh
+Xvfb :99 -screen 0 1280x800x24 &
+DISPLAY=:99 tools/host-tests/run.sh
+```
 
 ## 手動での確認（Ardour）
 

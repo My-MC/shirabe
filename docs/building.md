@@ -87,4 +87,14 @@ gh workflow run CI
 
 `nih_plug` は crates.io に公開されていないため、ワークスペースの `Cargo.toml` で Git のコミットを固定しています。
 
-更新するときは `rev` を変更し、CI と実機での確認を行ってからマージします。
+次の 3 つは、修正を加えたフォークを使っています。いずれも `shirabe` ブランチに修正をまとめています。
+
+| フォーク | 元のリポジトリ | 主な修正 |
+|---|---|---|
+| [My-MC/nih-plug](https://github.com/My-MC/nih-plug/tree/shirabe) | robbert-vdh/nih-plug | CLAP の状態読み込みの安全化と、読み込み後のパラメーター再取得の通知（[#3](https://github.com/My-MC/shirabe/issues/3)） |
+| [My-MC/baseview](https://github.com/My-MC/baseview/tree/shirabe) | RustAudio/baseview | OpenGL のコンテキストを作れないときに panic せず、sRGB なしでも再試行する（[#1](https://github.com/My-MC/shirabe/issues/1)） |
+| [My-MC/egui-baseview](https://github.com/My-MC/egui-baseview/tree/shirabe) | BillyDM/egui-baseview | 描画の初期化に失敗してもウィンドウを開いたままにする（[#1](https://github.com/My-MC/shirabe/issues/1)） |
+
+`baseview` と `egui-baseview` のフォークは、`nih_plug_egui` の依存先として `My-MC/nih-plug` 側で指定しています。
+
+更新するときはフォーク側で修正してコミットし、`Cargo.toml` の `rev` を変更して、CI と実機での確認を行ってからマージします。
