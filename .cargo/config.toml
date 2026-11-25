@@ -2,3 +2,11 @@
 # Build the bundler in release mode so serde is not compiled twice when bundling release builds.
 xtask = "run --package xtask --release --"
 xtask-debug = "run --package xtask --"
+
+# Link the C runtime statically on Windows so the plugin and the standalone application run on
+# machines without the Visual C++ Redistributable (VCRUNTIME140.dll).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

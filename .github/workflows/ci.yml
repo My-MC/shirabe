@@ -65,6 +65,16 @@ jobs:
         run: cargo xtask bundle shirabe-plugin --release
       - name: Build the standalone application
         run: cargo build --release -p shirabe-plugin --bin shirabe
+      - name: Check that no Visual C++ runtime DLL is required (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $files = @("target/release/shirabe.exe", "target/bundled/$env:BUNDLE_NAME.clap")
+          foreach ($f in $files) {
+            $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($f))
+            if ($text -match '(?i)(vcruntime|msvcp)\d+[_a-z0-9]*\.dll') { Write-Error "$f imports $($Matches[0])"; exit 1 }
+            Write-Host "$f: OK"
+          }
       - name: Validate the VST3 with pluginval (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
