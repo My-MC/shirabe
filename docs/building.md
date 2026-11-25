@@ -50,6 +50,10 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+## ホストでの動作確認
+
+プラグインホストを使った確認と自動テストは [testing.md](testing.md) にまとめています。
+
 ## スタンドアロンアプリでの動作確認
 
 デバッグビルドでは、オーディオスレッドでメモリ確保が起きると強制終了します。

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExportPreset id="5d1c3b8e-2f4a-4c55-9b7e-5f3a1d2c9e01" name="Shirabe F32">
+  <ExportFormat id="20b4ab09-6452-4cb3-bd66-b921cdbd2942"/>
+  <ExportFilename>
+    <Folder relative="true" path="/export"/>
+    <Field name="label" enabled="false"/>
+    <Field name="session" enabled="false"/>
+    <Field name="revision" enabled="false"/>
+    <Field name="time" enabled="false" value="T_None"/>
+    <Field name="date" enabled="false" value="D_None"/>
+  </ExportFilename>
+</ExportPreset>

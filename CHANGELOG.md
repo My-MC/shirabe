@@ -14,6 +14,8 @@
 - VST3、CLAP、スタンドアロンアプリのビルドに対応しました。
 - GitHub Actions による fmt / clippy / テスト、Windows・Linux・macOS のバンドル作成、pluginval による VST3 検証を追加しました。
 
+- Linux 上のホスト（Ardour、clap-validator、pluginval）で動作を確認する `tools/host-tests/run.sh` を追加しました。
+
 ### 修正
 
 - Windows で Visual C++ 再頒布可能パッケージが入っていない環境では、スタンドアロンアプリが `VCRUNTIME140.dll` が見つからずに起動しなかった問題を修正しました。C ランタイムを静的リンクし、CI で依存がないことを確認します。
