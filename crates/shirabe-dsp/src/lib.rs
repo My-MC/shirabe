@@ -16,6 +16,7 @@ pub mod level;
 pub mod loudness;
 pub mod osc;
 pub mod peak;
+pub mod ppm;
 pub mod true_peak;
 pub mod vu;
 
@@ -24,5 +25,6 @@ pub use level::{db_to_gain, gain_to_db, MINUS_INFINITY_DB};
 pub use loudness::{LoudnessMeter, LoudnessReadout};
 pub use osc::SineOscillator;
 pub use peak::{PeakBallistics, PeakMeter};
+pub use ppm::{PpmMeter, PpmType};
 pub use true_peak::TruePeakMeter;
 pub use vu::VuMeter;

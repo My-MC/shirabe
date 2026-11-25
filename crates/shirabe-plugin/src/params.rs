@@ -57,6 +57,23 @@ impl LoudnessTarget {
     }
 }
 
+/// Meter shown in the level section. Variant IDs are stored in projects: never change them.
+#[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LevelMode {
+    /// VU meter (IEC 60268-17).
+    #[id = "vu"]
+    #[name = "VU"]
+    Vu,
+    /// Type I quasi-peak programme meter (IEC 60268-10).
+    #[id = "ppm1"]
+    #[name = "PPM Type I"]
+    PpmTypeI,
+    /// Type II quasi-peak programme meter (IEC 60268-10).
+    #[id = "ppm2"]
+    #[name = "PPM Type II"]
+    PpmTypeII,
+}
+
 /// All parameters of the plugin.
 #[derive(Params)]
 pub struct ShirabeParams {
@@ -79,6 +96,10 @@ pub struct ShirabeParams {
     /// Sine peak level in dBFS that reads 0 VU.
     #[id = "vu_ref"]
     pub vu_reference: FloatParam,
+
+    /// Meter shown in the level section.
+    #[id = "lvl_mode"]
+    pub level_mode: EnumParam<LevelMode>,
 
     /// Loudness target used for colouring and the target marker.
     #[id = "ld_tgt"]
@@ -129,6 +150,8 @@ impl Default for ShirabeParams {
             )
             .with_step_size(1.0)
             .with_unit(" dBFS"),
+
+            level_mode: EnumParam::new("Level Meter", LevelMode::Vu),
 
             loudness_target: EnumParam::new("Loudness Target", LoudnessTarget::AribTrB32),
 

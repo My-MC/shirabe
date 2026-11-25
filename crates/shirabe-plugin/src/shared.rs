@@ -23,6 +23,8 @@ pub struct ChannelReadout {
     pub true_peak_max_db: AtomicF32,
     /// VU needle position in VU.
     pub vu: AtomicF32,
+    /// Quasi-peak programme meter reading in dBFS.
+    pub ppm_db: AtomicF32,
 }
 
 impl ChannelReadout {
@@ -33,6 +35,7 @@ impl ChannelReadout {
             max_db: AtomicF32::new(MINUS_INFINITY_DB),
             true_peak_max_db: AtomicF32::new(MINUS_INFINITY_DB),
             vu: AtomicF32::new(MINUS_INFINITY_DB),
+            ppm_db: AtomicF32::new(MINUS_INFINITY_DB),
         }
     }
 
@@ -50,6 +53,7 @@ impl ChannelReadout {
             &self.max_db,
             &self.true_peak_max_db,
             &self.vu,
+            &self.ppm_db,
         ] {
             v.store(MINUS_INFINITY_DB, Ordering::Relaxed);
         }

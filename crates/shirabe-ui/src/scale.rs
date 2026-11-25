@@ -37,6 +37,28 @@ impl MeterScale {
         signed_labels: true,
     };
 
+    /// Type I programme meter scale: dB relative to the permitted maximum level, -50 to +5.
+    pub const PPM_TYPE_I: MeterScale = MeterScale {
+        breakpoints: &[
+            (-50.0, 0.0),
+            (-40.0, 0.1),
+            (-30.0, 0.25),
+            (-20.0, 0.45),
+            (-10.0, 0.7),
+            (0.0, 0.92),
+            (5.0, 1.0),
+        ],
+        ticks: &[5.0, 0.0, -5.0, -10.0, -20.0, -30.0, -40.0, -50.0],
+        signed_labels: true,
+    };
+
+    /// Type II programme meter scale: dB relative to the alignment level, -12 to +12.
+    pub const PPM_TYPE_II: MeterScale = MeterScale {
+        breakpoints: &[(-12.0, 0.0), (12.0, 1.0)],
+        ticks: &[12.0, 8.0, 4.0, 0.0, -4.0, -8.0, -12.0],
+        signed_labels: true,
+    };
+
     /// Loudness scale in LUFS, -60 to 0, expanded between -40 and -10.
     pub const LOUDNESS: MeterScale = MeterScale {
         breakpoints: &[(-60.0, 0.0), (-40.0, 0.15), (-10.0, 0.9), (0.0, 1.0)],
@@ -101,7 +123,13 @@ mod tests {
 
     #[test]
     fn monotonic() {
-        for s in [MeterScale::PEAK_DBFS, MeterScale::VU, MeterScale::LOUDNESS] {
+        for s in [
+            MeterScale::PEAK_DBFS,
+            MeterScale::VU,
+            MeterScale::PPM_TYPE_I,
+            MeterScale::PPM_TYPE_II,
+            MeterScale::LOUDNESS,
+        ] {
             let mut last = -1.0;
             for i in 0..=800 {
                 let p = s.position(-70.0 + i as f32 * 0.1);

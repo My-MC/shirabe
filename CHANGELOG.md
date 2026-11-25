@@ -15,10 +15,17 @@
 - GitHub Actions による fmt / clippy / テスト、Windows・Linux・macOS のバンドル作成、pluginval による VST3 検証を追加しました。
 
 - Linux 上のホスト（Ardour、clap-validator、pluginval）で動作を確認する `tools/host-tests/run.sh` を追加しました。
+- トゥルーピークメーター（4 倍オーバーサンプリング）を追加しました。
+- ラウドネスメーター（Momentary、Short-term、Integrated、LRA、各最大値）と、目標値プリセット（ARIB TR-B32、EBU R128、ATSC A/85、配信向け）を追加しました。
+- VU メーターと PPM（Type I / Type II）を追加し、切り替えて表示できるようにしました。
+- ホストの再生開始に合わせて、Integrated と最大値をリセットする設定を追加しました。
 
 ### 修正
 
 - OpenGL 3.2 を使えない環境でエディターを開くと、ホストごと終了していた問題を修正しました。ウィンドウは開いたまま描画しない動作になります。sRGB 対応のフレームバッファがない環境では、sRGB なしで開き直して表示します（[#1](https://github.com/My-MC/shirabe/issues/1)）。
 - CLAP 版で、壊れた状態データを読み込むと異常終了していた問題と、状態の読み込み後にホストへパラメーターの再取得を通知していなかった問題を修正しました（[#3](https://github.com/My-MC/shirabe/issues/3)）。
+
+- 非正規化数の入力で処理が遅くなる問題を、処理中だけ FTZ / DAZ を有効にして解消しました。
+- 値が 0 付近のときに `-0.0` と表示されないようにしました。
 
 - Windows で Visual C++ 再頒布可能パッケージが入っていない環境では、スタンドアロンアプリが `VCRUNTIME140.dll` が見つからずに起動しなかった問題を修正しました。C ランタイムを静的リンクし、CI で依存がないことを確認します。

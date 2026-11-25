@@ -17,7 +17,7 @@ use shirabe_ui::{
 
 use shirabe_dsp::MINUS_INFINITY_DB;
 
-use crate::params::{LoudnessTarget, ShirabeParams};
+use crate::params::{LevelMode, LoudnessTarget, ShirabeParams};
 use crate::shared::SharedMeters;
 
 const SCALE_WIDTH: f32 = 26.0;
@@ -228,7 +228,14 @@ fn meters(
     let panel_rect = take(LOUDNESS_PANEL_WIDTH);
 
     peak_section(&painter, peak_rect, shared, theme, channels, target);
-    vu_section(&painter, vu_rect, shared, theme, channels);
+    level_section(
+        &painter,
+        vu_rect,
+        shared,
+        theme,
+        channels,
+        params.level_mode.value(),
+    );
     loudness_section(&painter, lufs_rect, shared, theme, target);
     loudness_panel(&painter, panel_rect, shared, theme, target, channels);
 }
@@ -275,33 +282,79 @@ fn peak_section(
     }
 }
 
-fn vu_section(
+/// PPM alignment level in dBFS (0 on the Type II scale).
+const PPM_ALIGNMENT_DBFS: f32 = -18.0;
+/// Permitted maximum level in dBFS (0 on the Type I scale, +9 on the Type II scale).
+const PERMITTED_MAX_DBFS: f32 = -9.0;
+
+fn level_section(
     painter: &Painter,
     rect: Rect,
     shared: &SharedMeters,
     theme: &Theme,
     channels: usize,
+    mode: LevelMode,
 ) {
-    let scale = MeterScale::VU;
+    // (scale, title, offset from dBFS to the scale, red from this scale value)
+    let (scale, title, offset, over_from) = match mode {
+        LevelMode::Vu => (MeterScale::VU, "VU", 0.0, 0.0),
+        LevelMode::PpmTypeI => (
+            MeterScale::PPM_TYPE_I,
+            "PPM I  dB",
+            -PERMITTED_MAX_DBFS,
+            0.0,
+        ),
+        LevelMode::PpmTypeII => (
+            MeterScale::PPM_TYPE_II,
+            "PPM II  dB",
+            -PPM_ALIGNMENT_DBFS,
+            PERMITTED_MAX_DBFS - PPM_ALIGNMENT_DBFS,
+        ),
+    };
+    let zones = [
+        Zone {
+            from_db: f32::NEG_INFINITY,
+            ..theme.vu_zones[0]
+        },
+        Zone {
+            from_db: over_from,
+            ..theme.vu_zones[theme.vu_zones.len() - 1]
+        },
+    ];
     let group = BarGroup::new(rect, channels);
-    group.draw_frame(painter, "VU", &scale, theme);
+    group.draw_frame(painter, title, &scale, theme);
     for index in 0..channels {
         let bar = group.bar(index);
-        let vu = shared.channel(index).vu.load(Ordering::Relaxed);
+        let r = shared.channel(index);
+        let value = match mode {
+            LevelMode::Vu => r.vu.load(Ordering::Relaxed),
+            _ => {
+                let db = r.ppm_db.load(Ordering::Relaxed);
+                if db <= MINUS_INFINITY_DB {
+                    MINUS_INFINITY_DB
+                } else {
+                    db + offset
+                }
+            }
+        };
         draw_level_bar(
             painter,
             bar,
             &scale,
             theme,
-            &theme.vu_zones,
-            vu,
+            &zones,
+            value,
             MINUS_INFINITY_DB,
         );
-        let colour = if vu >= 0.0 { theme.over } else { theme.text };
+        let colour = if value >= over_from {
+            theme.over
+        } else {
+            theme.text
+        };
         group.draw_texts(
             painter,
             bar,
-            [(format_db(vu), colour), (String::new(), colour)],
+            [(format_db(value), colour), (String::new(), colour)],
             &caption(shared, index),
             theme,
         );
@@ -490,8 +543,23 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter, _th
                     }
                 }
             });
-        ui.label("0 VU =");
-        ui.add(widgets::ParamSlider::for_param(&params.vu_reference, setter).with_width(110.0));
+        ui.label("Level");
+        let mode = params.level_mode.value();
+        egui::ComboBox::from_id_salt("level-mode")
+            .selected_text(level_mode_name(mode))
+            .show_ui(ui, |ui| {
+                for m in [LevelMode::Vu, LevelMode::PpmTypeI, LevelMode::PpmTypeII] {
+                    if ui.selectable_label(m == mode, level_mode_name(m)).clicked() {
+                        setter.begin_set_parameter(&params.level_mode);
+                        setter.set_parameter(&params.level_mode, m);
+                        setter.end_set_parameter(&params.level_mode);
+                    }
+                }
+            });
+        if mode == LevelMode::Vu {
+            ui.label("0 VU =");
+            ui.add(widgets::ParamSlider::for_param(&params.vu_reference, setter).with_width(110.0));
+        }
 
         let mut auto = params.auto_reset.value();
         if ui
@@ -504,6 +572,14 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter, _th
             setter.end_set_parameter(&params.auto_reset);
         }
     });
+}
+
+fn level_mode_name(m: LevelMode) -> &'static str {
+    match m {
+        LevelMode::Vu => "VU",
+        LevelMode::PpmTypeI => "PPM Type I (0 = -9 dBFS)",
+        LevelMode::PpmTypeII => "PPM Type II (0 = -18 dBFS)",
+    }
 }
 
 fn target_name(t: LoudnessTarget) -> &'static str {

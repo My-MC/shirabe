@@ -13,14 +13,16 @@ use std::sync::Arc;
 
 use nih_plug::prelude::*;
 use shirabe_dsp::{
-    db_to_gain, ChannelLayout, LoudnessMeter, PeakBallistics, PeakMeter, SineOscillator,
-    TruePeakMeter, VuMeter,
+    db_to_gain, ChannelLayout, LoudnessMeter, PeakBallistics, PeakMeter, PpmMeter, PpmType,
+    SineOscillator, TruePeakMeter, VuMeter,
 };
 
+mod denormal;
 mod editor;
 mod params;
 pub mod shared;
 
+use params::LevelMode;
 pub use params::ShirabeParams;
 use shared::{SharedMeters, MAX_CHANNELS};
 
@@ -32,6 +34,9 @@ pub struct Shirabe {
     peak: Vec<PeakMeter>,
     true_peak: Vec<TruePeakMeter>,
     vu: Vec<VuMeter>,
+    ppm_type_i: Vec<PpmMeter>,
+    ppm_type_ii: Vec<PpmMeter>,
+    level_mode: LevelMode,
     loudness: LoudnessMeter,
     osc: SineOscillator,
     osc_was_enabled: bool,
@@ -53,6 +58,13 @@ impl Default for Shirabe {
             vu: (0..MAX_CHANNELS)
                 .map(|_| VuMeter::new(48_000.0, -18.0))
                 .collect(),
+            ppm_type_i: (0..MAX_CHANNELS)
+                .map(|_| PpmMeter::new(48_000.0, PpmType::TypeI))
+                .collect(),
+            ppm_type_ii: (0..MAX_CHANNELS)
+                .map(|_| PpmMeter::new(48_000.0, PpmType::TypeII))
+                .collect(),
+            level_mode: LevelMode::Vu,
             loudness: LoudnessMeter::new(48_000.0, ChannelLayout::Stereo.roles()),
             osc: SineOscillator::new(1000.0, 48_000.0),
             osc_was_enabled: false,
@@ -118,6 +130,9 @@ impl Plugin for Shirabe {
         for meter in &mut self.vu {
             meter.prepare(self.sample_rate);
         }
+        for meter in self.ppm_type_i.iter_mut().chain(&mut self.ppm_type_ii) {
+            meter.prepare(self.sample_rate);
+        }
         let layout = ChannelLayout::from_channel_count(channels).unwrap_or(ChannelLayout::Stereo);
         self.loudness.prepare(self.sample_rate, layout.roles());
         self.osc.reset();
@@ -135,6 +150,9 @@ impl Plugin for Shirabe {
         for meter in &mut self.vu {
             meter.reset();
         }
+        for meter in self.ppm_type_i.iter_mut().chain(&mut self.ppm_type_ii) {
+            meter.reset();
+        }
         self.loudness.reset();
         self.osc.reset();
         self.shared.clear();
@@ -146,6 +164,7 @@ impl Plugin for Shirabe {
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        let _denormals = denormal::DenormalGuard::new();
         let playing = context.transport().playing;
         let transport_started = playing && !self.was_playing;
         self.was_playing = playing;
@@ -172,6 +191,17 @@ impl Plugin for Shirabe {
         self.osc_was_enabled = osc_enabled;
 
         let vu_reference = self.params.vu_reference.value();
+        let level_mode = self.params.level_mode.value();
+        if level_mode != self.level_mode {
+            // Start the newly selected meter from rest instead of showing a stale reading.
+            for meter in self.ppm_type_i.iter_mut().chain(&mut self.ppm_type_ii) {
+                meter.reset();
+            }
+            for meter in &mut self.vu {
+                meter.reset();
+            }
+            self.level_mode = level_mode;
+        }
         let channels = buffer.as_slice_immutable();
         for (index, channel) in channels.iter().take(MAX_CHANNELS).enumerate() {
             let readout = self.shared.channel(index);
@@ -186,10 +216,23 @@ impl Plugin for Shirabe {
                 .true_peak_max_db
                 .store(true_peak.max_dbtp(), Ordering::Relaxed);
 
-            let vu = &mut self.vu[index];
-            vu.set_reference(vu_reference);
-            vu.process(channel);
-            readout.vu.store(vu.vu(), Ordering::Relaxed);
+            match level_mode {
+                LevelMode::Vu => {
+                    let vu = &mut self.vu[index];
+                    vu.set_reference(vu_reference);
+                    vu.process(channel);
+                    readout.vu.store(vu.vu(), Ordering::Relaxed);
+                }
+                LevelMode::PpmTypeI | LevelMode::PpmTypeII => {
+                    let ppm = if level_mode == LevelMode::PpmTypeI {
+                        &mut self.ppm_type_i[index]
+                    } else {
+                        &mut self.ppm_type_ii[index]
+                    };
+                    ppm.process(channel);
+                    readout.ppm_db.store(ppm.level_db(), Ordering::Relaxed);
+                }
+            }
         }
         self.loudness.process(channels);
         self.shared.loudness.store(&self.loudness.readout());
