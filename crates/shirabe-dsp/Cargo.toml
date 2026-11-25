@@ -12,3 +12,7 @@ categories = ["multimedia::audio"]
 
 # This crate must stay independent of any plugin framework or GUI toolkit.
 [dependencies]
+
+[dev-dependencies]
+# Independent reference implementation, only used to cross-check our results in tests.
+ebur128 = "0.1.11"

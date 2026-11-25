@@ -12,7 +12,10 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use nih_plug::prelude::*;
-use shirabe_dsp::{db_to_gain, PeakBallistics, PeakMeter, SineOscillator};
+use shirabe_dsp::{
+    db_to_gain, ChannelLayout, LoudnessMeter, PeakBallistics, PeakMeter, SineOscillator,
+    TruePeakMeter, VuMeter,
+};
 
 mod editor;
 mod params;
@@ -27,8 +30,12 @@ pub struct Shirabe {
     shared: Arc<SharedMeters>,
     sample_rate: f32,
     peak: Vec<PeakMeter>,
+    true_peak: Vec<TruePeakMeter>,
+    vu: Vec<VuMeter>,
+    loudness: LoudnessMeter,
     osc: SineOscillator,
     osc_was_enabled: bool,
+    was_playing: bool,
 }
 
 impl Default for Shirabe {
@@ -40,8 +47,16 @@ impl Default for Shirabe {
             peak: (0..MAX_CHANNELS)
                 .map(|_| PeakMeter::new(48_000.0, PeakBallistics::default()))
                 .collect(),
+            true_peak: (0..MAX_CHANNELS)
+                .map(|_| TruePeakMeter::new(48_000.0))
+                .collect(),
+            vu: (0..MAX_CHANNELS)
+                .map(|_| VuMeter::new(48_000.0, -18.0))
+                .collect(),
+            loudness: LoudnessMeter::new(48_000.0, ChannelLayout::Stereo.roles()),
             osc: SineOscillator::new(1000.0, 48_000.0),
             osc_was_enabled: false,
+            was_playing: false,
         }
     }
 }
@@ -97,6 +112,14 @@ impl Plugin for Shirabe {
         for meter in &mut self.peak {
             meter.prepare(self.sample_rate);
         }
+        for meter in &mut self.true_peak {
+            meter.prepare(self.sample_rate);
+        }
+        for meter in &mut self.vu {
+            meter.prepare(self.sample_rate);
+        }
+        let layout = ChannelLayout::from_channel_count(channels).unwrap_or(ChannelLayout::Stereo);
+        self.loudness.prepare(self.sample_rate, layout.roles());
         self.osc.reset();
         self.shared.configure(channels, self.sample_rate);
         true
@@ -106,6 +129,13 @@ impl Plugin for Shirabe {
         for meter in &mut self.peak {
             meter.reset();
         }
+        for meter in &mut self.true_peak {
+            meter.reset();
+        }
+        for meter in &mut self.vu {
+            meter.reset();
+        }
+        self.loudness.reset();
         self.osc.reset();
         self.shared.clear();
     }
@@ -114,12 +144,14 @@ impl Plugin for Shirabe {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext<Self>,
+        context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        if self.shared.take_reset_request() {
-            for meter in &mut self.peak {
-                meter.reset_max();
-            }
+        let playing = context.transport().playing;
+        let transport_started = playing && !self.was_playing;
+        self.was_playing = playing;
+        let auto_reset = transport_started && self.params.auto_reset.value();
+        if self.shared.take_reset_request() || auto_reset {
+            self.reset_maxima();
         }
 
         let osc_enabled = self.params.osc_enabled.value();
@@ -139,16 +171,44 @@ impl Plugin for Shirabe {
         }
         self.osc_was_enabled = osc_enabled;
 
-        for (index, channel) in buffer.as_slice_immutable().iter().enumerate() {
-            let Some(meter) = self.peak.get_mut(index) else {
-                break;
-            };
-            meter.process(channel);
-            self.shared.channel(index).store(meter);
+        let vu_reference = self.params.vu_reference.value();
+        let channels = buffer.as_slice_immutable();
+        for (index, channel) in channels.iter().take(MAX_CHANNELS).enumerate() {
+            let readout = self.shared.channel(index);
+
+            let peak = &mut self.peak[index];
+            peak.process(channel);
+            readout.store(peak);
+
+            let true_peak = &mut self.true_peak[index];
+            true_peak.process(channel);
+            readout
+                .true_peak_max_db
+                .store(true_peak.max_dbtp(), Ordering::Relaxed);
+
+            let vu = &mut self.vu[index];
+            vu.set_reference(vu_reference);
+            vu.process(channel);
+            readout.vu.store(vu.vu(), Ordering::Relaxed);
         }
+        self.loudness.process(channels);
+        self.shared.loudness.store(&self.loudness.readout());
         self.shared.blocks.fetch_add(1, Ordering::Relaxed);
 
         ProcessStatus::Normal
+    }
+}
+
+impl Shirabe {
+    /// Clears maxima, integrated loudness and loudness range (keeps the running meters).
+    fn reset_maxima(&mut self) {
+        for meter in &mut self.peak {
+            meter.reset_max();
+        }
+        for meter in &mut self.true_peak {
+            meter.reset_max();
+        }
+        self.loudness.reset_programme();
     }
 }
 

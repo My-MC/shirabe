@@ -26,8 +26,14 @@ pub struct Theme {
     pub text_dim: Color32,
     /// Peak-hold marker.
     pub hold: Color32,
-    /// Colour zones, sorted by ascending `from_db`.
+    /// Colour zones for peak meters (dBFS), sorted by ascending `from_db`.
     pub zones: Vec<Zone>,
+    /// Colour zones for VU meters (VU), sorted by ascending `from_db`.
+    pub vu_zones: Vec<Zone>,
+    /// Accent for values within the loudness target tolerance.
+    pub on_target: Color32,
+    /// Accent for values above the loudness target or true-peak ceiling.
+    pub over: Color32,
     /// Height of one bar segment in points (0 draws a continuous bar).
     pub segment_height: f32,
     /// Gap between segments in points.
@@ -60,19 +66,38 @@ impl Theme {
                     unlit: Color32::from_rgb(0x36, 0x16, 0x14),
                 },
             ],
+            vu_zones: vec![
+                Zone {
+                    from_db: f32::NEG_INFINITY,
+                    lit: Color32::from_rgb(0xe8, 0xd8, 0xa8),
+                    unlit: Color32::from_rgb(0x2e, 0x2a, 0x20),
+                },
+                Zone {
+                    from_db: 0.0,
+                    lit: Color32::from_rgb(0xf0, 0x4a, 0x3c),
+                    unlit: Color32::from_rgb(0x36, 0x16, 0x14),
+                },
+            ],
+            on_target: Color32::from_rgb(0x3d, 0xd6, 0x6b),
+            over: Color32::from_rgb(0xf0, 0x4a, 0x3c),
             segment_height: 3.0,
             segment_gap: 1.0,
         }
     }
 
-    /// The zone that applies at `db`.
+    /// The peak-meter zone that applies at `db`.
     pub fn zone_at(&self, db: f32) -> &Zone {
-        self.zones
-            .iter()
-            .rev()
-            .find(|z| db >= z.from_db)
-            .unwrap_or(&self.zones[0])
+        zone_at(&self.zones, db)
     }
+}
+
+/// The zone of `zones` (sorted by ascending `from_db`) that applies at `db`.
+pub fn zone_at(zones: &[Zone], db: f32) -> &Zone {
+    zones
+        .iter()
+        .rev()
+        .find(|z| db >= z.from_db)
+        .unwrap_or(&zones[0])
 }
 
 impl Default for Theme {

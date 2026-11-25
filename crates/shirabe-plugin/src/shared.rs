@@ -1,9 +1,12 @@
 //! Lock-free state shared between the audio thread (writer) and the editor (reader).
+//!
+//! Every value is an independent atomic, so the editor may see values from adjacent blocks
+//! mixed together; for meters this is harmless and avoids any locking on the audio thread.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use nih_plug::prelude::AtomicF32;
-use shirabe_dsp::{ChannelLayout, PeakMeter, MINUS_INFINITY_DB};
+use shirabe_dsp::{ChannelLayout, LoudnessReadout, PeakMeter, MINUS_INFINITY_DB};
 
 /// Maximum number of channels the meters are pre-allocated for.
 pub const MAX_CHANNELS: usize = 8;
@@ -16,6 +19,10 @@ pub struct ChannelReadout {
     pub hold_db: AtomicF32,
     /// Highest sample peak since the last reset in dBFS.
     pub max_db: AtomicF32,
+    /// Highest true peak since the last reset in dBTP.
+    pub true_peak_max_db: AtomicF32,
+    /// VU needle position in VU.
+    pub vu: AtomicF32,
 }
 
 impl ChannelReadout {
@@ -24,10 +31,12 @@ impl ChannelReadout {
             level_db: AtomicF32::new(MINUS_INFINITY_DB),
             hold_db: AtomicF32::new(MINUS_INFINITY_DB),
             max_db: AtomicF32::new(MINUS_INFINITY_DB),
+            true_peak_max_db: AtomicF32::new(MINUS_INFINITY_DB),
+            vu: AtomicF32::new(MINUS_INFINITY_DB),
         }
     }
 
-    /// Publishes the current state of a meter (audio thread).
+    /// Publishes the current state of a sample peak meter (audio thread).
     pub fn store(&self, meter: &PeakMeter) {
         self.level_db.store(meter.level_db(), Ordering::Relaxed);
         self.hold_db.store(meter.hold_db(), Ordering::Relaxed);
@@ -35,15 +44,83 @@ impl ChannelReadout {
     }
 
     fn clear(&self) {
-        self.level_db.store(MINUS_INFINITY_DB, Ordering::Relaxed);
-        self.hold_db.store(MINUS_INFINITY_DB, Ordering::Relaxed);
-        self.max_db.store(MINUS_INFINITY_DB, Ordering::Relaxed);
+        for v in [
+            &self.level_db,
+            &self.hold_db,
+            &self.max_db,
+            &self.true_peak_max_db,
+            &self.vu,
+        ] {
+            v.store(MINUS_INFINITY_DB, Ordering::Relaxed);
+        }
+    }
+}
+
+/// An optional value stored as `NaN` when absent.
+pub struct OptionalF32(AtomicF32);
+
+impl OptionalF32 {
+    fn new() -> Self {
+        Self(AtomicF32::new(f32::NAN))
+    }
+
+    /// Stores a value (`None` becomes `NaN`).
+    pub fn store(&self, value: Option<f64>) {
+        self.0
+            .store(value.map_or(f32::NAN, |v| v as f32), Ordering::Relaxed);
+    }
+
+    /// Loads the value.
+    pub fn load(&self) -> Option<f32> {
+        let v = self.0.load(Ordering::Relaxed);
+        (!v.is_nan()).then_some(v)
+    }
+}
+
+/// Loudness read-outs.
+pub struct LoudnessShared {
+    /// Momentary loudness in LUFS.
+    pub momentary: OptionalF32,
+    /// Short-term loudness in LUFS.
+    pub short_term: OptionalF32,
+    /// Integrated loudness in LUFS.
+    pub integrated: OptionalF32,
+    /// Loudness range in LU.
+    pub range: OptionalF32,
+    /// Maximum momentary loudness in LUFS.
+    pub max_momentary: OptionalF32,
+    /// Maximum short-term loudness in LUFS.
+    pub max_short_term: OptionalF32,
+}
+
+impl LoudnessShared {
+    fn new() -> Self {
+        Self {
+            momentary: OptionalF32::new(),
+            short_term: OptionalF32::new(),
+            integrated: OptionalF32::new(),
+            range: OptionalF32::new(),
+            max_momentary: OptionalF32::new(),
+            max_short_term: OptionalF32::new(),
+        }
+    }
+
+    /// Publishes a loudness read-out (audio thread).
+    pub fn store(&self, r: &LoudnessReadout) {
+        self.momentary.store(r.momentary);
+        self.short_term.store(r.short_term);
+        self.integrated.store(r.integrated);
+        self.range.store(r.range);
+        self.max_momentary.store(r.max_momentary);
+        self.max_short_term.store(r.max_short_term);
     }
 }
 
 /// Everything the editor can read.
 pub struct SharedMeters {
     channels: [ChannelReadout; MAX_CHANNELS],
+    /// Programme loudness of all channels.
+    pub loudness: LoudnessShared,
     active_channels: AtomicUsize,
     sample_rate: AtomicF32,
     reset_requested: AtomicBool,
@@ -56,6 +133,7 @@ impl SharedMeters {
     pub fn new() -> Self {
         Self {
             channels: std::array::from_fn(|_| ChannelReadout::new()),
+            loudness: LoudnessShared::new(),
             active_channels: AtomicUsize::new(2),
             sample_rate: AtomicF32::new(0.0),
             reset_requested: AtomicBool::new(false),
@@ -76,6 +154,7 @@ impl SharedMeters {
         for channel in &self.channels {
             channel.clear();
         }
+        self.loudness.store(&LoudnessReadout::default());
     }
 
     /// Read-outs of channel `index` (must be below [`MAX_CHANNELS`]).
@@ -98,7 +177,7 @@ impl SharedMeters {
         self.sample_rate.load(Ordering::Relaxed)
     }
 
-    /// Asks the audio thread to clear the maxima (editor).
+    /// Asks the audio thread to clear the maxima and the programme loudness (editor).
     pub fn request_reset(&self) {
         self.reset_requested.store(true, Ordering::Relaxed);
     }

@@ -8,6 +8,8 @@ pub struct MeterScale {
     pub breakpoints: &'static [(f32, f32)],
     /// Tick marks in dB.
     pub ticks: &'static [f32],
+    /// Label ticks with their sign (`+3`, `-20`) instead of the magnitude only.
+    pub signed_labels: bool,
 }
 
 impl MeterScale {
@@ -17,7 +19,41 @@ impl MeterScale {
         ticks: &[
             0.0, -3.0, -6.0, -9.0, -12.0, -18.0, -24.0, -30.0, -40.0, -50.0, -60.0,
         ],
+        signed_labels: false,
     };
+
+    /// VU scale, -20 to +3 VU, with the classic expanded region around 0 VU.
+    pub const VU: MeterScale = MeterScale {
+        breakpoints: &[
+            (-20.0, 0.0),
+            (-10.0, 0.30),
+            (-5.0, 0.55),
+            (0.0, 0.85),
+            (3.0, 1.0),
+        ],
+        ticks: &[
+            3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0, -5.0, -7.0, -10.0, -20.0,
+        ],
+        signed_labels: true,
+    };
+
+    /// Loudness scale in LUFS, -60 to 0, expanded between -40 and -10.
+    pub const LOUDNESS: MeterScale = MeterScale {
+        breakpoints: &[(-60.0, 0.0), (-40.0, 0.15), (-10.0, 0.9), (0.0, 1.0)],
+        ticks: &[0.0, -10.0, -14.0, -18.0, -23.0, -28.0, -33.0, -40.0, -60.0],
+        signed_labels: false,
+    };
+
+    /// Formats a tick label.
+    pub fn label(&self, tick: f32) -> String {
+        if self.signed_labels && tick > 0.0 {
+            format!("+{}", tick as i32)
+        } else if self.signed_labels {
+            format!("{}", tick as i32)
+        } else {
+            format!("{}", tick.abs() as i32)
+        }
+    }
 
     /// Lowest dB on the scale.
     pub fn min_db(&self) -> f32 {
@@ -65,12 +101,20 @@ mod tests {
 
     #[test]
     fn monotonic() {
-        let s = MeterScale::PEAK_DBFS;
-        let mut last = -1.0;
-        for i in 0..=600 {
-            let p = s.position(-60.0 + i as f32 * 0.1);
-            assert!(p >= last);
-            last = p;
+        for s in [MeterScale::PEAK_DBFS, MeterScale::VU, MeterScale::LOUDNESS] {
+            let mut last = -1.0;
+            for i in 0..=800 {
+                let p = s.position(-70.0 + i as f32 * 0.1);
+                assert!(p >= last);
+                last = p;
+            }
         }
+    }
+
+    #[test]
+    fn vu_labels_are_signed() {
+        assert_eq!(MeterScale::VU.label(3.0), "+3");
+        assert_eq!(MeterScale::VU.label(-20.0), "-20");
+        assert_eq!(MeterScale::PEAK_DBFS.label(-18.0), "18");
     }
 }

@@ -2,7 +2,7 @@
 
 use crate::egui::{pos2, Align2, FontId, Painter, Rect, Stroke};
 use crate::scale::MeterScale;
-use crate::theme::Theme;
+use crate::theme::{zone_at, Theme, Zone};
 
 /// Draws a vertical segmented level bar with a peak-hold marker inside `rect`.
 pub fn draw_level_bar(
@@ -10,6 +10,7 @@ pub fn draw_level_bar(
     rect: Rect,
     scale: &MeterScale,
     theme: &Theme,
+    zones: &[Zone],
     level_db: f32,
     hold_db: f32,
 ) {
@@ -30,7 +31,7 @@ pub fn draw_level_bar(
             let top = bottom - theme.segment_height;
             // Colour by the dB value at the segment centre.
             let centre_pos = (i as f32 + 0.5) / count as f32;
-            let zone = theme.zone_at(db_at(scale, centre_pos));
+            let zone = zone_at(zones, db_at(scale, centre_pos));
             let lit = centre_pos <= level_pos && level_pos > 0.0;
             let colour = if lit { zone.lit } else { zone.unlit };
             painter.rect_filled(
@@ -41,7 +42,7 @@ pub fn draw_level_bar(
         }
     } else {
         let top = inner.bottom() - level_pos * height;
-        let zone = theme.zone_at(level_db);
+        let zone = zone_at(zones, level_db);
         painter.rect_filled(
             Rect::from_min_max(pos2(inner.left(), top), inner.right_bottom()),
             0.0,
@@ -67,7 +68,7 @@ pub fn draw_scale_labels(painter: &Painter, rect: Rect, scale: &MeterScale, them
         painter.text(
             pos2(rect.right() - 3.0, y),
             Align2::RIGHT_CENTER,
-            format!("{}", tick.abs() as i32),
+            scale.label(tick),
             font.clone(),
             theme.text_dim,
         );
@@ -76,6 +77,22 @@ pub fn draw_scale_labels(painter: &Painter, rect: Rect, scale: &MeterScale, them
             Stroke::new(1.0_f32, theme.text_dim),
         );
     }
+}
+
+/// Draws a horizontal marker line (for example a target level) across `rect` at `db`.
+pub fn draw_marker(
+    painter: &Painter,
+    rect: Rect,
+    scale: &MeterScale,
+    db: f32,
+    colour: crate::egui::Color32,
+) {
+    let inner = rect.shrink(1.0);
+    let y = inner.bottom() - scale.position(db) * inner.height();
+    painter.line_segment(
+        [pos2(rect.left() - 3.0, y), pos2(rect.right() + 3.0, y)],
+        Stroke::new(1.5_f32, colour),
+    );
 }
 
 /// Inverse of [`MeterScale::position`] by bisection (only used for colouring segments).
