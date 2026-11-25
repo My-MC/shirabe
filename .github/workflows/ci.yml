@@ -73,7 +73,7 @@ jobs:
           foreach ($f in $files) {
             $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($f))
             if ($text -match '(?i)(vcruntime|msvcp)\d+[_a-z0-9]*\.dll') { Write-Error "$f imports $($Matches[0])"; exit 1 }
-            Write-Host "$f: OK"
+            Write-Host "${f}: OK"
           }
       - name: Validate the VST3 with pluginval (Windows)
         if: runner.os == 'Windows'
