@@ -18,10 +18,15 @@ Shirabe Meter Suite の構成、スレッド設計、メーターの仕様、互
 |---|---|---|---|
 | `shirabe-dsp` | 計測処理（ピーク、VU、ラウドネスなど）とチャンネル構成 | 標準ライブラリのみ（数値計算用クレートは可） | MIT OR Apache-2.0 |
 | `shirabe-ui` | メーターの描画部品、目盛り、テーマ | `egui`（`nih_plug_egui` 経由） | GPL-3.0-or-later |
-| `shirabe-plugin` | プラグイン本体、エディター、スタンドアロンアプリ | 上記すべてと `nih_plug` | GPL-3.0-or-later |
+| `shirabe-plugin` | プラグイン本体、計測エンジン（`MeterEngine`）、エディター | 上記すべてと `nih_plug` | GPL-3.0-or-later |
+| `shirabe-app` | スタンドアロンアプリ（デバイス選択、設定の保存） | 上記すべてと `cpal`、`eframe` | GPL-3.0-or-later |
 | `xtask` | VST3 / CLAP のバンドル作成 | `nih_plug_xtask` | GPL-3.0-or-later |
 
 `shirabe-dsp` はプラグインフレームワークにも GUI にも依存させません。
+
+スタンドアロンアプリは、プラグインと同じ `MeterEngine` とエディターの描画関数（`editor::draw`）を使います。
+音声入力は `cpal` で直接開き、デバイスのサンプルレートと任意のバッファサイズをそのまま受け付けます。
+パラメーターは、ホストの代わりにアプリ側の `GuiContext` 実装が直接書き換えます（nih-plug のフォークで `ParamPtr::set_normalized_value` を公開）。
 
 これにより、計測処理を `cargo test` だけで検証でき、他のプロジェクトからも再利用できます。
 

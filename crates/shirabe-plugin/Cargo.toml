@@ -11,16 +11,12 @@ publish = false
 
 [lib]
 name = "shirabe_plugin"
-# `cdylib` is the plugin; `lib` is used by the standalone binary.
+# `cdylib` is the plugin; `lib` is used by the standalone application (`shirabe-app`).
 crate-type = ["cdylib", "lib"]
-
-[[bin]]
-name = "shirabe"
-path = "src/main.rs"
 
 [dependencies]
 # `assert_process_allocs` aborts on audio-thread allocations in debug builds only.
-nih_plug = { workspace = true, features = ["standalone", "assert_process_allocs"] }
+nih_plug = { workspace = true, features = ["assert_process_allocs"] }
 nih_plug_egui.workspace = true
 shirabe-dsp.workspace = true
 shirabe-ui.workspace = true

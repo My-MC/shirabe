@@ -32,7 +32,7 @@ cargo xtask bundle shirabe-plugin --release
 次のコマンドで、スタンドアロンアプリを `target/release/shirabe`（Windows では `shirabe.exe`）に作成します。
 
 ```sh
-cargo build --release -p shirabe-plugin --bin shirabe
+cargo build --release -p shirabe-app --bin shirabe
 ```
 
 ## テスト
@@ -58,13 +58,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 デバッグビルドでは、オーディオスレッドでメモリ確保が起きると強制終了します。
 
-次のコマンドで、音声デバイスなしでデバッグビルドを起動します。
+次のコマンドで、デバッグビルドを起動します。
 
 ```sh
-cargo run -p shirabe-plugin --bin shirabe -- --backend dummy
+cargo run -p shirabe-app --bin shirabe
 ```
 
-起動後に「Test oscillator」をオンにすると、メーターが動くことを確認できます。
+「Input」で「None」を選び「Test oscillator」をオンにすると、デバイスなしでメーターが動くことを確認できます。
+入力デバイスでの確認手順は [testing.md](testing.md) にあります。
 
 ## CI
 

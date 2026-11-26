@@ -8,21 +8,17 @@
 // semicolon (rust-lang/rust#79813). Remove this once the bindings are updated.
 #![allow(semicolon_in_expressions_from_non_local_macros)]
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use nih_plug::prelude::*;
-use shirabe_dsp::{
-    db_to_gain, ChannelLayout, LoudnessMeter, PeakBallistics, PeakMeter, PpmMeter, PpmType,
-    SineOscillator, TruePeakMeter, VuMeter,
-};
 
 mod denormal;
-mod editor;
-mod params;
+pub mod editor;
+pub mod engine;
+pub mod params;
 pub mod shared;
 
-use params::LevelMode;
+use engine::MeterEngine;
 pub use params::ShirabeParams;
 use shared::{SharedMeters, MAX_CHANNELS};
 
@@ -30,45 +26,17 @@ use shared::{SharedMeters, MAX_CHANNELS};
 pub struct Shirabe {
     params: Arc<ShirabeParams>,
     shared: Arc<SharedMeters>,
-    sample_rate: f32,
-    peak: Vec<PeakMeter>,
-    true_peak: Vec<TruePeakMeter>,
-    vu: Vec<VuMeter>,
-    ppm_type_i: Vec<PpmMeter>,
-    ppm_type_ii: Vec<PpmMeter>,
-    level_mode: LevelMode,
-    loudness: LoudnessMeter,
-    osc: SineOscillator,
-    osc_was_enabled: bool,
-    was_playing: bool,
+    engine: MeterEngine,
 }
 
 impl Default for Shirabe {
     fn default() -> Self {
+        let params = Arc::new(ShirabeParams::default());
+        let shared = Arc::new(SharedMeters::new());
         Self {
-            params: Arc::new(ShirabeParams::default()),
-            shared: Arc::new(SharedMeters::new()),
-            sample_rate: 48_000.0,
-            peak: (0..MAX_CHANNELS)
-                .map(|_| PeakMeter::new(48_000.0, PeakBallistics::default()))
-                .collect(),
-            true_peak: (0..MAX_CHANNELS)
-                .map(|_| TruePeakMeter::new(48_000.0))
-                .collect(),
-            vu: (0..MAX_CHANNELS)
-                .map(|_| VuMeter::new(48_000.0, -18.0))
-                .collect(),
-            ppm_type_i: (0..MAX_CHANNELS)
-                .map(|_| PpmMeter::new(48_000.0, PpmType::TypeI))
-                .collect(),
-            ppm_type_ii: (0..MAX_CHANNELS)
-                .map(|_| PpmMeter::new(48_000.0, PpmType::TypeII))
-                .collect(),
-            level_mode: LevelMode::Vu,
-            loudness: LoudnessMeter::new(48_000.0, ChannelLayout::Stereo.roles()),
-            osc: SineOscillator::new(1000.0, 48_000.0),
-            osc_was_enabled: false,
-            was_playing: false,
+            engine: MeterEngine::new(params.clone(), shared.clone()),
+            params,
+            shared,
         }
     }
 }
@@ -119,43 +87,12 @@ impl Plugin for Shirabe {
             .main_input_channels
             .map_or(0, |c| c.get() as usize)
             .min(MAX_CHANNELS);
-
-        self.sample_rate = buffer_config.sample_rate;
-        for meter in &mut self.peak {
-            meter.prepare(self.sample_rate);
-        }
-        for meter in &mut self.true_peak {
-            meter.prepare(self.sample_rate);
-        }
-        for meter in &mut self.vu {
-            meter.prepare(self.sample_rate);
-        }
-        for meter in self.ppm_type_i.iter_mut().chain(&mut self.ppm_type_ii) {
-            meter.prepare(self.sample_rate);
-        }
-        let layout = ChannelLayout::from_channel_count(channels).unwrap_or(ChannelLayout::Stereo);
-        self.loudness.prepare(self.sample_rate, layout.roles());
-        self.osc.reset();
-        self.shared.configure(channels, self.sample_rate);
+        self.engine.prepare(buffer_config.sample_rate, channels);
         true
     }
 
     fn reset(&mut self) {
-        for meter in &mut self.peak {
-            meter.reset();
-        }
-        for meter in &mut self.true_peak {
-            meter.reset();
-        }
-        for meter in &mut self.vu {
-            meter.reset();
-        }
-        for meter in self.ppm_type_i.iter_mut().chain(&mut self.ppm_type_ii) {
-            meter.reset();
-        }
-        self.loudness.reset();
-        self.osc.reset();
-        self.shared.clear();
+        self.engine.reset();
     }
 
     fn process(
@@ -164,101 +101,9 @@ impl Plugin for Shirabe {
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        let _denormals = denormal::DenormalGuard::new();
         let playing = context.transport().playing;
-        let transport_started = playing && !self.was_playing;
-        self.was_playing = playing;
-        let auto_reset = transport_started && self.params.auto_reset.value();
-        if self.shared.take_reset_request() || auto_reset {
-            self.reset_maxima();
-        }
-
-        let osc_enabled = self.params.osc_enabled.value();
-        if osc_enabled {
-            if !self.osc_was_enabled {
-                self.osc.reset();
-            }
-            self.osc
-                .set_frequency(self.params.osc_frequency.value(), self.sample_rate);
-            let amplitude = db_to_gain(self.params.osc_level.value());
-            for frame in buffer.iter_samples() {
-                let value = self.osc.next_sample() * amplitude;
-                for sample in frame {
-                    *sample = value;
-                }
-            }
-        }
-        self.osc_was_enabled = osc_enabled;
-
-        let vu_reference = self.params.vu_reference.value();
-        let level_mode = self.params.level_mode.value();
-        if level_mode != self.level_mode {
-            // Start the newly selected meter from rest instead of showing a stale reading.
-            for meter in self.ppm_type_i.iter_mut().chain(&mut self.ppm_type_ii) {
-                meter.reset();
-            }
-            for meter in &mut self.vu {
-                meter.reset();
-            }
-            self.level_mode = level_mode;
-        }
-        let channels = buffer.as_slice_immutable();
-        for (index, channel) in channels.iter().take(MAX_CHANNELS).enumerate() {
-            let readout = self.shared.channel(index);
-
-            let peak = &mut self.peak[index];
-            peak.process(channel);
-            readout.store(peak);
-
-            let true_peak = &mut self.true_peak[index];
-            true_peak.process(channel);
-            readout
-                .true_peak_max_db
-                .store(true_peak.max_dbtp(), Ordering::Relaxed);
-
-            match level_mode {
-                LevelMode::Vu => {
-                    let vu = &mut self.vu[index];
-                    vu.set_reference(vu_reference);
-                    vu.process(channel);
-                    readout.vu.store(vu.vu(), Ordering::Relaxed);
-                }
-                LevelMode::PpmTypeI
-                | LevelMode::PpmTypeII
-                | LevelMode::PpmTypeIIBbc
-                | LevelMode::PpmIeee => {
-                    let ppm = if level_mode == LevelMode::PpmTypeI {
-                        &mut self.ppm_type_i[index]
-                    } else {
-                        &mut self.ppm_type_ii[index]
-                    };
-                    ppm.process(channel);
-                    readout.ppm_db.store(ppm.level_db(), Ordering::Relaxed);
-                }
-            }
-        }
-        self.loudness.set_integrating(self.shared.integrating());
-        self.loudness.process(channels);
-        self.shared
-            .programme_seconds
-            .store(self.loudness.programme_seconds() as f32, Ordering::Relaxed);
-        self.shared.loudness.store(&self.loudness.readout());
-        self.shared.blocks.fetch_add(1, Ordering::Relaxed);
-
+        self.engine.process(buffer.as_slice(), playing);
         ProcessStatus::Normal
-    }
-}
-
-impl Shirabe {
-    /// Clears maxima, integrated loudness and loudness range (keeps the running meters).
-    fn reset_maxima(&mut self) {
-        for meter in &mut self.peak {
-            meter.reset_max();
-        }
-        for meter in &mut self.true_peak {
-            meter.reset_max();
-        }
-        self.loudness.reset_programme();
     }
 }
 

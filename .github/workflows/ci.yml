@@ -64,7 +64,7 @@ jobs:
       - name: Bundle VST3 and CLAP
         run: cargo xtask bundle shirabe-plugin --release
       - name: Build the standalone application
-        run: cargo build --release -p shirabe-plugin --bin shirabe
+        run: cargo build --release -p shirabe-app --bin shirabe
       - name: Check that no Visual C++ runtime DLL is required (Windows)
         if: runner.os == 'Windows'
         shell: pwsh

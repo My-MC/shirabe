@@ -46,7 +46,8 @@ Windows 11 での確認結果（2026-11-25）は次のとおりです。
 トゥルーピーク、VU、PPM（Type I / II）、ラウドネス（M / S / I / LRA）を実装し、同一画面で表示できます。
 ラウドネスとトゥルーピークは、EBU の公式テスト音源で EBU Tech 3341 / 3342 の全ケースを確認しました。
 表示は EBU Mode の要件（目盛り、単位、I と LRA の操作）に合わせています（[standards.md](standards.md)）。
-PLR、およびスタンドアロン専用のオーディオ入出力とファイル再生は未実装です。
+スタンドアロンアプリは自前のオーディオ処理に置き換え、入力デバイスの選択画面を追加しました（[#2](https://github.com/My-MC/shirabe/issues/2)）。
+PLR と、音声ファイルを再生しながらの測定は未実装です。
 
 - トゥルーピーク（ITU-R BS.1770 Annex 2 を参照）
 - ラウドネス：Momentary、Short-term、Integrated、LRA、PLR（ITU-R BS.1770、EBU Tech 3341 / 3342）

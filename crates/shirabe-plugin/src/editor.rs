@@ -65,26 +65,35 @@ pub(crate) fn create(
                 .show(ctx, egui_state.as_ref(), |ui| {
                     egui::Frame::default()
                         .inner_margin(egui::Margin::same(8))
-                        .show(ui, |ui| {
-                            header(ui, &shared, theme);
-                            ui.separator();
-
-                            let controls =
-                                if params.loudness_target.value() == LoudnessTarget::Custom {
-                                    CONTROLS_HEIGHT + CUSTOM_ROW_HEIGHT
-                                } else {
-                                    CONTROLS_HEIGHT
-                                };
-                            let height = (ui.available_height() - controls).max(120.0);
-                            meters(ui, &params, &shared, theme, height);
-
-                            ui.separator();
-                            settings(ui, &params, setter);
-                            oscillator_controls(ui, &params, setter, theme);
-                        });
+                        .show(ui, |ui| draw(ui, &params, &shared, setter, theme));
                 });
         },
     )
+}
+
+/// Draws the whole meter view (header, meters and settings). Used by the plugin editor and by
+/// the standalone application.
+pub fn draw(
+    ui: &mut egui::Ui,
+    params: &ShirabeParams,
+    shared: &SharedMeters,
+    setter: &ParamSetter,
+    theme: &Theme,
+) {
+    header(ui, shared, theme);
+    ui.separator();
+
+    let controls = if params.loudness_target.value() == LoudnessTarget::Custom {
+        CONTROLS_HEIGHT + CUSTOM_ROW_HEIGHT
+    } else {
+        CONTROLS_HEIGHT
+    };
+    let height = (ui.available_height() - controls).max(120.0);
+    meters(ui, params, shared, theme, height);
+
+    ui.separator();
+    settings(ui, params, setter);
+    oscillator_controls(ui, params, setter, theme);
 }
 
 fn header(ui: &mut egui::Ui, shared: &SharedMeters, theme: &Theme) {
@@ -936,7 +945,12 @@ fn oscillator_controls(
                     .color(Color32::from_rgb(0xf2, 0xc1, 0x2e)),
             );
         } else {
-            ui.label(RichText::new("Pass-through, no latency").color(theme.text_dim));
+            let note = if setter.raw_context.plugin_api() == PluginApi::Standalone {
+                "Measuring the input device"
+            } else {
+                "Pass-through, no latency"
+            };
+            ui.label(RichText::new(note).color(theme.text_dim));
         }
     });
 }

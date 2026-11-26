@@ -280,6 +280,17 @@ impl Default for ShirabeParams {
                 } else {
                     format!("±{v:.1} LU")
                 }
+            }))
+            .with_string_to_value(Arc::new(|s| {
+                let s = s.trim();
+                if s.eq_ignore_ascii_case("none") {
+                    return Some(0.0);
+                }
+                s.trim_start_matches(['±', '+'])
+                    .trim_end_matches("LU")
+                    .trim()
+                    .parse()
+                    .ok()
             })),
 
             custom_true_peak: FloatParam::new(
@@ -291,7 +302,9 @@ impl Default for ShirabeParams {
                 },
             )
             .with_step_size(0.5)
-            .with_unit(" dBTP"),
+            .with_unit(" dBTP")
+            // Adding 0.0 turns -0.0 into 0.0, so the text round-trips.
+            .with_value_to_string(Arc::new(|v| format!("{:.1}", v + 0.0))),
 
             loudness_scale: EnumParam::new("Loudness Scale", LoudnessScale::Ebu9),
 
@@ -346,5 +359,9 @@ mod tests {
         assert_eq!(params.custom_tolerance.value(), 0.0);
         assert_eq!(params.custom_true_peak.value(), -1.0);
         assert_eq!(params.custom_tolerance.to_string(), "none");
+        let p = &params.custom_tolerance;
+        for text in ["none", "±0.5 LU", "1.5"] {
+            assert!(p.string_to_normalized_value(text).is_some(), "{text}");
+        }
     }
 }

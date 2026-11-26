@@ -51,21 +51,23 @@ GitHub Actions の各実行結果の Artifacts から、プラットフォーム
 
 ## スタンドアロンアプリの使い方
 
-オーディオデバイスやバックエンドはコマンドラインで指定します。
+スタンドアロンアプリは、選んだ入力デバイスの音を測定します。
+画面上部の「Audio API」で WASAPI や ALSA などのオーディオ API を、「Input」で入力デバイスを選びます。
 
-次のコマンドで、使えるオプションの一覧を表示します。
+- サンプルレート、チャンネル数、サンプル形式は、デバイスの設定をそのまま使います。
+- 3 チャンネル以上のデバイスでは、チャンネル 1 と 2 を測定します。
+- 「None」を選ぶと、デバイスを使わずにテストオシレーターだけで動作を確認できます。
+- 選んだデバイスと各設定は、次回の起動時にも引き継がれます。
 
-```sh
-shirabe --help
-```
+設定ファイルの場所は次のとおりです。
 
-次のコマンドは、音声デバイスなしで画面だけを起動します（テストオシレーターで動作確認できます）。
+| OS | 場所 |
+|---|---|
+| Windows | `%APPDATA%\Shirabe\standalone.json` |
+| macOS | `~/Library/Application Support/Shirabe/standalone.json` |
+| Linux | `$XDG_CONFIG_HOME/shirabe/standalone.json`（既定は `~/.config/shirabe/`） |
 
-```sh
-shirabe --backend dummy
-```
-
-デバイスを画面から選べるスタンドアロン専用の UI は、[ロードマップ](docs/roadmap.md) のフェーズ 1 以降で追加します。
+音声ファイルを再生しながらの測定は、[ロードマップ](docs/roadmap.md) のフェーズ 1 で追加します。
 
 ## ドキュメント
 

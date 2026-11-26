@@ -4,6 +4,7 @@ members = [
     "crates/shirabe-dsp",
     "crates/shirabe-ui",
     "crates/shirabe-plugin",
+    "crates/shirabe-app",
     "xtask",
 ]
 
@@ -17,9 +18,9 @@ repository = "https://github.com/My-MC/shirabe"
 [workspace.dependencies]
 # nih-plug is not published on crates.io. We use the My-MC fork (branch `shirabe`), which adds
 # fixes for editor and CLAP state robustness; pin an exact commit so builds are reproducible.
-nih_plug = { git = "https://github.com/My-MC/nih-plug.git", rev = "c75fdeac5cc0c853ff7769fb21d5c7d44b090c86" }
-nih_plug_egui = { git = "https://github.com/My-MC/nih-plug.git", rev = "c75fdeac5cc0c853ff7769fb21d5c7d44b090c86" }
-nih_plug_xtask = { git = "https://github.com/My-MC/nih-plug.git", rev = "c75fdeac5cc0c853ff7769fb21d5c7d44b090c86" }
+nih_plug = { git = "https://github.com/My-MC/nih-plug.git", rev = "ab628280e9488f4570f36734033d7c8e174864c9" }
+nih_plug_egui = { git = "https://github.com/My-MC/nih-plug.git", rev = "ab628280e9488f4570f36734033d7c8e174864c9" }
+nih_plug_xtask = { git = "https://github.com/My-MC/nih-plug.git", rev = "ab628280e9488f4570f36734033d7c8e174864c9" }
 
 shirabe-dsp = { path = "crates/shirabe-dsp" }
 shirabe-ui = { path = "crates/shirabe-ui" }

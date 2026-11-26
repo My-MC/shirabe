@@ -128,3 +128,30 @@ DISPLAY=:99 tools/host-tests/run.sh
 1. Ardour を起動し、セッションを開きます。音声デバイスがない場合は、ALSA の `snd-dummy` モジュールを読み込み、Audio System を ALSA、デバイスを Dummy にします。
 2. ミキサー画面で `Bus 1` の `Shirabe Meter Suite` をダブルクリックし、エディターを開きます。
 3. 再生すると、テスト信号のピーク（L 約 -4.4 dBFS、R 約 -9.1 dBFS）が表示されます。
+
+## スタンドアロンアプリの入力の確認（Linux）
+
+ALSA のループバックデバイスに試験信号を流し、スタンドアロンアプリで測定します。
+44.1 kHz と 96 kHz でも同じ手順で確認でき、デバイスのサンプルレートがそのまま使われることを確かめられます。
+
+次のコマンドで、ループバックデバイスを用意します。
+
+```sh
+sudo modprobe snd-aloop
+```
+
+次のコマンドで、L -18 dBFS / R -24 dBFS の 1 kHz 正弦波を 44.1 kHz で流します。
+
+```sh
+ffmpeg -re -f lavfi -i "aevalsrc=0.125893*sin(2*PI*1000*t)|0.0630957*sin(2*PI*1000*t):s=44100:d=60" -f alsa hw:Loopback,0,0
+```
+
+スタンドアロンアプリを起動し、「Audio API」で ALSA、「Input」で `hw:CARD=Loopback,DEV=1` を選びます。
+期待される表示は次のとおりです（2026-11-26 に 44.1 kHz と 96 kHz で確認）。
+
+| 項目 | 表示 |
+|---|---|
+| サンプルレート | 44.1 kHz（または 96.0 kHz） |
+| ピーク / トゥルーピーク | L -18.0 / R -24.0 |
+| VU | L +0.0 / R -6.0 |
+| Integrated | -20.0 LKFS |

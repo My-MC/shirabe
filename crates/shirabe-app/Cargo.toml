@@ -1,0 +1,28 @@
+[package]
+name = "shirabe-app"
+description = "Shirabe Meter Suite: standalone application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license = "GPL-3.0-or-later"
+publish = false
+
+[[bin]]
+name = "shirabe"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+# Same source as nih-plug's `assert_process_allocs` allocator: debug builds abort when the
+# audio callback allocates.
+assert_no_alloc = { git = "https://github.com/robbert-vdh/rust-assert-no-alloc.git", branch = "feature/nested-permit-forbid", features = ["backtrace", "log"] }
+cpal = "0.15"
+# Must use the same egui version as nih_plug_egui (the shared editor code).
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+nih_plug.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+shirabe-plugin = { path = "../shirabe-plugin" }
+shirabe-ui.workspace = true
