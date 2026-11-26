@@ -639,7 +639,17 @@ impl HistoryView {
 
     /// Copies the newest points, oldest first, and returns them for this frame.
     pub fn update(&mut self, shared: &SharedMeters) -> &[HistoryPoint] {
-        let count = shared.history.read_recent(&mut self.raw);
+        // A clear can land while the points are copied, which would mix the old run with the
+        // new one. Retry once; if the history is cleared again, draw nothing this frame.
+        let mut count = 0;
+        for _ in 0..2 {
+            let epoch = shared.history.epoch();
+            count = shared.history.read_recent(&mut self.raw);
+            if shared.history.epoch() == epoch {
+                break;
+            }
+            count = 0;
+        }
         for (point, &(momentary, short_term)) in self.points[..count].iter_mut().zip(&self.raw) {
             *point = HistoryPoint::new(
                 momentary.is_finite().then_some(momentary),
