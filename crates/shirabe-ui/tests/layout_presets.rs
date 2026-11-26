@@ -7,7 +7,8 @@
 
 use shirabe_ui::egui::{pos2, vec2, Rect};
 use shirabe_ui::layout::{
-    arrange, LayoutPreset, TileId, COLUMN_WIDTH, MIN_READOUT_HEIGHT, SECTION_GAP,
+    arrange, LayoutPreset, TileId, COLUMN_WIDTH, MIN_HISTORY_HEIGHT, MIN_READOUT_HEIGHT,
+    SECTION_GAP,
 };
 
 fn area(width: f32, height: f32) -> Rect {
@@ -157,4 +158,80 @@ fn both_presets_place_every_tile_at_the_minimum_window_size() {
             assert_tiles_fit(preset, area(w, h));
         }
     }
+}
+
+#[test]
+fn the_history_preset_keeps_the_standard_columns_and_adds_a_full_width_graph() {
+    let rect = area(900.0, 400.0);
+    let arrangement = arrange(LayoutPreset::History, rect);
+    let standard = arrange(LayoutPreset::Standard, rect);
+
+    // The meter columns and the read-out column stay where Standard puts them, so switching
+    // to the history view does not move the numbers around.
+    for tile in [
+        TileId::Peak,
+        TileId::Level,
+        TileId::Loudness,
+        TileId::Readout,
+    ] {
+        let here = arrangement.tile(tile).unwrap_or_else(|| panic!("{tile:?}"));
+        let there = standard.tile(tile).unwrap_or_else(|| panic!("{tile:?}"));
+        assert!(
+            (here.left() - there.left()).abs() < 0.01
+                && (here.right() - there.right()).abs() < 0.01
+                && (here.top() - there.top()).abs() < 0.01,
+            "{tile:?} moved: {here:?} vs {there:?}"
+        );
+    }
+    // The graph takes the bottom of the window instead of the scope.
+    assert!(arrangement.tile(TileId::Scope).is_none());
+    let graph = arrangement.tile(TileId::History).expect("history graph");
+    assert!((graph.left() - rect.left()).abs() < 0.01);
+    assert!((graph.right() - rect.right()).abs() < 0.01);
+    assert!((graph.bottom() - rect.bottom()).abs() < 0.01);
+    assert!(graph.height() >= MIN_HISTORY_HEIGHT);
+    // The read-out keeps its full minimum height above the graph.
+    let readout = arrangement.tile(TileId::Readout).expect("read-out");
+    assert!(readout.height() >= MIN_READOUT_HEIGHT);
+    assert!((readout.bottom() + SECTION_GAP - graph.top()).abs() < 0.01);
+    assert_tiles_fit(LayoutPreset::History, rect);
+}
+
+#[test]
+fn the_history_preset_drops_the_graph_before_the_readout() {
+    // Below the height that fits the read-out and the graph, only the meters remain.
+    let rect = area(640.0, 300.0);
+    let arrangement = arrange(LayoutPreset::History, rect);
+    assert!(arrangement.tile(TileId::History).is_none());
+    let readout = arrangement.tile(TileId::Readout).expect("read-out");
+    assert!(readout.height() >= MIN_READOUT_HEIGHT);
+    assert!((readout.bottom() - rect.bottom()).abs() < 0.01);
+    assert!(arrangement.tile(TileId::Peak).is_some());
+    assert!(arrangement.tile(TileId::Level).is_some());
+    assert!(arrangement.tile(TileId::Loudness).is_some());
+    assert_tiles_fit(LayoutPreset::History, rect);
+
+    // At the window's minimum size the graph is gone and the numbers are intact.
+    for (w, h) in [(640.0, 380.0), (820.0, 240.0), (640.0, 260.0)] {
+        let rect = area(w, h);
+        let arrangement = arrange(LayoutPreset::History, rect);
+        assert!(arrangement.tile(TileId::Readout).is_some(), "{w}x{h}");
+        assert_tiles_fit(LayoutPreset::History, rect);
+        if arrangement.tile(TileId::History).is_some() {
+            let graph = arrangement.tile(TileId::History).expect("graph");
+            assert!(graph.height() >= MIN_HISTORY_HEIGHT, "{w}x{h}");
+            let readout = arrangement.tile(TileId::Readout).expect("read-out");
+            assert!(readout.height() >= MIN_READOUT_HEIGHT, "{w}x{h}");
+        }
+    }
+}
+
+#[test]
+fn a_tall_history_preset_also_shows_the_scope() {
+    // A tall window has room for every meter, the graph and the scope.
+    let rect = area(900.0, 700.0);
+    let arrangement = arrange(LayoutPreset::History, rect);
+    assert!(arrangement.tile(TileId::History).is_some());
+    assert!(arrangement.tile(TileId::Scope).is_some());
+    assert_tiles_fit(LayoutPreset::History, rect);
 }

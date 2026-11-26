@@ -30,7 +30,7 @@ use nih_plug::prelude::ParamSetter;
 use shirabe_plugin::engine::MeterEngine;
 use shirabe_plugin::shared::SharedMeters;
 use shirabe_plugin::{
-    editor::{self, ScopeView},
+    editor::{self, HistoryView, ScopeView},
     fonts, ShirabeParams,
 };
 use shirabe_ui::i18n::Text;
@@ -96,6 +96,8 @@ struct App {
     saved_params: std::collections::BTreeMap<String, f32>,
     /// Display-only history of the Lissajous view.
     scope: ScopeView,
+    /// Display-only history of the loudness graph.
+    history: HistoryView,
     last_check: Instant,
     /// Whether the appearance preset window is open.
     show_appearance: bool,
@@ -160,6 +162,7 @@ impl App {
             host,
             saved_params: settings.params.clone(),
             scope: ScopeView::new(),
+            history: HistoryView::new(),
             last_check: Instant::now(),
             show_appearance: false,
             appearance_target: appearance::Target::new(
@@ -747,6 +750,7 @@ impl eframe::App for App {
                 &setter,
                 &self.theme,
                 &mut self.scope,
+                &mut self.history,
                 text,
                 true,
             );

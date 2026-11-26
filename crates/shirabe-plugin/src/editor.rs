@@ -10,11 +10,13 @@ use std::sync::Arc;
 
 use nih_plug::prelude::*;
 use nih_plug_egui::{create_egui_editor, resizable_window::ResizableWindow, widgets};
+use shirabe_dsp::history::{HISTORY_CAPACITY, HISTORY_INTERVAL_SECONDS};
 use shirabe_dsp::MINUS_INFINITY_DB;
 use shirabe_ui::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Painter, Rect, RichText, Sense,
     Stroke,
 };
+use shirabe_ui::history::{self as history_graph, Graph as HistoryGraph, Point as HistoryPoint};
 use shirabe_ui::i18n::{Lang, Text};
 use shirabe_ui::layout::{arrange, TileId};
 use shirabe_ui::scope::{
@@ -58,6 +60,7 @@ pub(crate) fn create(
         EditorState {
             theme: Theme::dark(),
             scope: ScopeView::new(),
+            history: HistoryView::new(),
             japanese_font_installed: false,
             japanese: None,
             japanese_check_pending: false,
@@ -83,6 +86,7 @@ pub(crate) fn create(
                     setter,
                     &state.theme,
                     &mut state.scope,
+                    &mut state.history,
                     text,
                     japanese_attempted,
                 );
@@ -101,10 +105,11 @@ fn plugin_window(ctx: &egui::Context, params: &ShirabeParams, content: impl FnOn
         });
 }
 
-/// State owned by one editor instance: the theme and the display-only Lissajous history.
+/// State owned by one editor instance: the theme and the display-only histories.
 struct EditorState {
     theme: Theme,
     scope: ScopeView,
+    history: HistoryView,
     /// Whether installing the CJK fallback has been attempted for this context.
     japanese_font_installed: bool,
     /// Whether the current fonts cover the Japanese catalogue (cached per context).
@@ -158,6 +163,7 @@ pub fn draw(
     setter: &ParamSetter,
     theme: &Theme,
     scope: &mut ScopeView,
+    history: &mut HistoryView,
     text: Text,
     japanese_attempted: bool,
 ) {
@@ -170,7 +176,7 @@ pub fn draw(
         CONTROLS_HEIGHT
     };
     let height = (ui.available_height() - controls).max(120.0);
-    meters(ui, params, shared, theme, height, scope, text);
+    meters(ui, params, shared, theme, height, scope, history, text);
 
     ui.separator();
     settings(ui, params, setter, text);
@@ -270,7 +276,11 @@ fn header(
             "layout-preset",
             &params.layout_preset,
             setter,
-            &[LayoutPreset::Standard, LayoutPreset::Stereo],
+            &[
+                LayoutPreset::Standard,
+                LayoutPreset::Stereo,
+                LayoutPreset::History,
+            ],
             |preset| layout_preset_name(text, preset),
         );
 
@@ -462,6 +472,7 @@ impl BarGroup {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn meters(
     ui: &mut egui::Ui,
     params: &ShirabeParams,
@@ -469,6 +480,7 @@ fn meters(
     theme: &Theme,
     height: f32,
     scope: &mut ScopeView,
+    history: &mut HistoryView,
     text: Text,
 ) {
     let width = ui.available_width();
@@ -496,6 +508,7 @@ fn meters(
         theme,
         loudness: &loudness,
         scope,
+        history,
         now,
         channels,
         target,
@@ -514,6 +527,7 @@ struct MeterCtx<'a> {
     /// Loudness settings resolved once per frame and shared by two tiles.
     loudness: &'a LoudnessView,
     scope: &'a mut ScopeView,
+    history: &'a mut HistoryView,
     now: f64,
     channels: usize,
     target: TargetSpec,
@@ -531,6 +545,7 @@ fn tile_view(id: TileId) -> fn(&mut MeterCtx<'_>, &Painter, Rect) {
         TileId::Loudness => tile_loudness,
         TileId::Readout => tile_readout,
         TileId::Scope => tile_scope,
+        TileId::History => tile_history,
     }
 }
 
@@ -586,6 +601,59 @@ fn tile_scope(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
     scope_section(
         painter, rect, ctx.shared, ctx.params, ctx.theme, ctx.scope, ctx.now, ctx.text,
     );
+}
+
+fn tile_history(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
+    let points = ctx.history.update(ctx.shared);
+    let graph = HistoryGraph {
+        points,
+        points_per_second: (1.0 / HISTORY_INTERVAL_SECONDS) as f32,
+        span_seconds: HISTORY_CAPACITY as f32 * HISTORY_INTERVAL_SECONDS as f32,
+        target: ctx.target.loudness,
+        tolerance: ctx.target.tolerance,
+        scale: ctx.loudness.scale,
+        label_offset: ctx.loudness.label_offset(),
+        paused: !ctx.shared.integrating(),
+        text: ctx.text,
+    };
+    history_graph::draw(painter, rect, &graph, ctx.theme);
+}
+
+/// Display-only state of the loudness history graph.
+///
+/// The measured path never sees this state: it copies the newest points out of the capture
+/// ring so the widget can draw them. The buffers are allocated once, on the UI thread.
+pub struct HistoryView {
+    raw: Vec<(f32, f32)>,
+    points: Vec<HistoryPoint>,
+}
+
+impl HistoryView {
+    /// Creates an empty view.
+    pub fn new() -> Self {
+        Self {
+            raw: vec![(f32::NAN, f32::NAN); HISTORY_CAPACITY],
+            points: vec![HistoryPoint::new(None, None); HISTORY_CAPACITY],
+        }
+    }
+
+    /// Copies the newest points, oldest first, and returns them for this frame.
+    pub fn update(&mut self, shared: &SharedMeters) -> &[HistoryPoint] {
+        let count = shared.history.read_recent(&mut self.raw);
+        for (point, &(momentary, short_term)) in self.points[..count].iter_mut().zip(&self.raw) {
+            *point = HistoryPoint::new(
+                momentary.is_finite().then_some(momentary),
+                short_term.is_finite().then_some(short_term),
+            );
+        }
+        &self.points[..count]
+    }
+}
+
+impl Default for HistoryView {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Draws the Lissajous view from the captured stereo frames.
@@ -1118,6 +1186,16 @@ impl LoudnessView {
             .map_or(MINUS_INFINITY_DB, |v| v - self.target.loudness)
     }
 
+    /// Added to the scale values on the labels: the target for absolute units, nothing for
+    /// relative ones. The bars and the history graph label their axis the same way.
+    fn label_offset(&self) -> f32 {
+        if self.relative {
+            0.0
+        } else {
+            self.target.loudness
+        }
+    }
+
     fn colour(&self, theme: &Theme, lufs: Option<f32>) -> Color32 {
         let t = self.target.loudness;
         match (lufs, self.target.tolerance) {
@@ -1157,11 +1235,7 @@ fn loudness_section(
     view: &LoudnessView,
 ) {
     let group = BarGroup::new(rect, 2);
-    let label_offset = if view.relative {
-        0.0
-    } else {
-        view.target.loudness
-    };
+    let label_offset = view.label_offset();
     let title = format!("{} {}  {}", view.mode_name, view.scale_name, view.unit());
     group.draw_frame(painter, &title, &view.scale, theme, label_offset);
     let zones = view.zones(theme);
@@ -1525,6 +1599,7 @@ fn layout_preset_name(text: Text, preset: LayoutPreset) -> &'static str {
     match preset {
         LayoutPreset::Standard => text.layout_standard(),
         LayoutPreset::Stereo => text.layout_stereo(),
+        LayoutPreset::History => text.layout_history(),
     }
 }
 
@@ -1601,7 +1676,11 @@ mod tests {
         for tile in TileId::ALL {
             assert!(registry.get(tile).is_some(), "{tile} has no view");
         }
-        for preset in [LayoutPreset::Standard, LayoutPreset::Stereo] {
+        for preset in [
+            LayoutPreset::Standard,
+            LayoutPreset::Stereo,
+            LayoutPreset::History,
+        ] {
             for size in [vec2(820.0, 500.0), vec2(640.0, 260.0)] {
                 let rect = Rect::from_min_size(pos2(0.0, 0.0), size);
                 let arrangement = arrange(preset.geometry(), rect);
@@ -1611,116 +1690,188 @@ mod tests {
         }
     }
 
-    #[test]
-    fn minimum_custom_window_shows_all_readouts_and_unstable_lra_note() {
-        for preset in [LayoutPreset::Stereo, LayoutPreset::Standard] {
-            let params = ShirabeParams::default();
-            // These pointers come from the live parameters owned by this test.
-            unsafe {
+    /// Renders the real editor window at `size` with `preset` and a Custom target, seeded with
+    /// the values that make every read-out row and the unstable-LRA note visible.
+    fn window_frame(preset: LayoutPreset, size: egui::Vec2) -> (egui::FullOutput, Theme) {
+        let params = ShirabeParams::default();
+        // These pointers come from the live parameters owned by this test.
+        unsafe {
+            params
+                .layout_preset
+                .as_ptr()
+                .set_normalized_value(params.layout_preset.preview_normalized(preset));
+            params.loudness_target.as_ptr().set_normalized_value(
                 params
-                    .layout_preset
-                    .as_ptr()
-                    .set_normalized_value(params.layout_preset.preview_normalized(preset));
-                params.loudness_target.as_ptr().set_normalized_value(
-                    params
-                        .loudness_target
-                        .preview_normalized(LoudnessTarget::Custom),
-                );
-            }
-            assert_eq!(params.layout_preset.value(), preset);
-            assert_eq!(params.loudness_target.value(), LoudnessTarget::Custom);
-            let shared = SharedMeters::new();
-            shared.loudness.range.store(Some(0.0));
-            shared.loudness.plr.store(Some(16.0));
-            shared.loudness.max_momentary.store(Some(-22.0));
-            shared.loudness.max_short_term.store(Some(-23.0));
-            let theme = Theme::dark();
-            let mut scope = ScopeView::new();
-            let ctx = egui::Context::default();
-            let output = ctx.run(
-                egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(640.0, 380.0))),
-                    ..Default::default()
-                },
-                |ctx| {
-                    let setter = ParamSetter {
-                        raw_context: &TestGuiContext,
-                    };
-                    plugin_window(ctx, &params, |ui| {
-                        draw(
-                            ui,
-                            &params,
-                            &shared,
-                            &setter,
-                            &theme,
-                            &mut scope,
-                            Text::new(Lang::English, true),
-                            true,
-                        );
-                    });
-                },
+                    .loudness_target
+                    .preview_normalized(LoudnessTarget::Custom),
             );
-            let text = |label| {
-                output
-                    .shapes
-                    .iter()
-                    .find_map(|clipped| match &clipped.shape {
-                        egui::Shape::Text(text) if text.galley.text() == label => {
-                            let bounds = text.visual_bounding_rect();
-                            assert!(
-                                clipped.clip_rect.contains_rect(bounds),
-                                "{preset:?}: {label} clipped"
-                            );
-                            Some((bounds, text.galley.job.sections[0].format.font_id.size))
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| panic!("{preset:?}: missing {label:?}"))
-            };
-            let (heading, _) = text("INTEGRATED");
-            let panel = output
+        }
+        assert_eq!(params.layout_preset.value(), preset);
+        assert_eq!(params.loudness_target.value(), LoudnessTarget::Custom);
+        let shared = SharedMeters::new();
+        shared.loudness.range.store(Some(0.0));
+        shared.loudness.plr.store(Some(16.0));
+        shared.loudness.max_momentary.store(Some(-22.0));
+        shared.loudness.max_short_term.store(Some(-23.0));
+        // A few history points, so the graph draws a trace instead of the empty state.
+        for index in 0..60 {
+            shared.history.record(
+                (48_000.0 * 0.1) as usize,
+                Some(-23.0 + (index % 4) as f32),
+                Some(-24.0),
+            );
+        }
+        let theme = Theme::dark();
+        let mut scope = ScopeView::new();
+        let mut history = HistoryView::new();
+        let ctx = egui::Context::default();
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), size)),
+                ..Default::default()
+            },
+            |ctx| {
+                let setter = ParamSetter {
+                    raw_context: &TestGuiContext,
+                };
+                plugin_window(ctx, &params, |ui| {
+                    draw(
+                        ui,
+                        &params,
+                        &shared,
+                        &setter,
+                        &theme,
+                        &mut scope,
+                        &mut history,
+                        Text::new(Lang::English, true),
+                        true,
+                    );
+                });
+            },
+        );
+        (output, theme)
+    }
+
+    /// Asserts that every read-out row and the LRA note fit inside the read-out panel without
+    /// overlapping.
+    fn assert_readout_rows_fit(output: &egui::FullOutput, theme: &Theme, what: &str) {
+        let text = |label: &str| {
+            output
                 .shapes
                 .iter()
                 .find_map(|clipped| match &clipped.shape {
-                    egui::Shape::Rect(panel)
-                        if panel.fill == theme.panel && panel.rect.contains_rect(heading) =>
-                    {
-                        Some(panel.rect)
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        let bounds = text.visual_bounding_rect();
+                        assert!(
+                            clipped.clip_rect.contains_rect(bounds),
+                            "{what}: {label} clipped"
+                        );
+                        Some((bounds, text.galley.job.sections[0].format.font_id.size))
                     }
                     _ => None,
                 })
-                .expect("readout panel");
-            let mut bottom = heading.bottom();
-            for (label, value) in [
-                ("LRA", "0.0 LU *"),
-                ("PLR", "16.0 LU"),
-                ("M max", "-22.0 LUFS"),
-                ("S max", "-23.0 LUFS"),
-                ("TP max", "-inf dBTP"),
-                ("Time", "0:00"),
-                ("Target", "-14 / -1"),
-            ] {
-                let (row, size) = text(label);
-                let (value_bounds, value_size) = text(value);
-                assert_eq!(size, 12.0, "{preset:?}: {label}");
-                assert_eq!(value_size, 12.0, "{preset:?}: {value}");
-                assert!(
-                    row.right() <= value_bounds.left(),
-                    "{preset:?}: {label} overlaps its value"
-                );
-                let row = row.union(value_bounds);
-                assert!(
-                    panel.contains_rect(row) && row.top() >= bottom,
-                    "{preset:?}: {label} is clipped or overlaps another row"
-                );
-                bottom = row.bottom();
-            }
-            let (note, _) = text("* LRA not yet stable (< 60 s)");
+                .unwrap_or_else(|| panic!("{what}: missing {label:?}"))
+        };
+        let (heading, _) = text("INTEGRATED");
+        let panel = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(panel)
+                    if panel.fill == theme.panel && panel.rect.contains_rect(heading) =>
+                {
+                    Some(panel.rect)
+                }
+                _ => None,
+            })
+            .expect("readout panel");
+        let mut bottom = heading.bottom();
+        for (label, value) in [
+            ("LRA", "0.0 LU *"),
+            ("PLR", "16.0 LU"),
+            ("M max", "-22.0 LUFS"),
+            ("S max", "-23.0 LUFS"),
+            ("TP max", "-inf dBTP"),
+            ("Time", "0:00"),
+            ("Target", "-14 / -1"),
+        ] {
+            let (row, size) = text(label);
+            let (value_bounds, value_size) = text(value);
+            assert_eq!(size, 12.0, "{what}: {label}");
+            assert_eq!(value_size, 12.0, "{what}: {value}");
             assert!(
-                panel.contains_rect(note) && note.top() >= bottom,
-                "{preset:?}: note is clipped or overlaps the rows"
+                row.right() <= value_bounds.left(),
+                "{what}: {label} overlaps its value"
+            );
+            let row = row.union(value_bounds);
+            assert!(
+                panel.contains_rect(row) && row.top() >= bottom,
+                "{what}: {label} is clipped or overlaps another row"
+            );
+            bottom = row.bottom();
+        }
+        let (note, _) = text("* LRA not yet stable (< 60 s)");
+        assert!(
+            panel.contains_rect(note) && note.top() >= bottom,
+            "{what}: note is clipped or overlaps the rows"
+        );
+    }
+
+    #[test]
+    fn minimum_custom_window_shows_all_readouts_and_unstable_lra_note() {
+        for preset in [
+            LayoutPreset::Stereo,
+            LayoutPreset::Standard,
+            LayoutPreset::History,
+        ] {
+            let (output, theme) = window_frame(preset, vec2(640.0, 380.0));
+            assert_readout_rows_fit(&output, &theme, &format!("{preset:?} at the minimum size"));
+        }
+    }
+
+    #[test]
+    fn the_history_layout_keeps_every_row_and_draws_the_graph() {
+        let (output, theme) = window_frame(LayoutPreset::History, vec2(820.0, 560.0));
+        assert_readout_rows_fit(&output, &theme, "History");
+
+        let mut titles = Vec::new();
+        let mut panel = None;
+        for clipped in &output.shapes {
+            if let egui::Shape::Text(text) = &clipped.shape {
+                titles.push(text.galley.text().to_owned());
+                if text.galley.text() == "LOUDNESS HISTORY" {
+                    panel = Some(text.visual_bounding_rect());
+                }
+            }
+        }
+        let title = panel.expect("the graph heading is drawn");
+        for expected in ["3 min", "s ago", "M", "S", "-60"] {
+            assert!(
+                titles.iter().any(|t| t == expected),
+                "{expected} missing from {titles:?}"
             );
         }
+        // The axis labels and the heading stay inside the meter area of the window.
+        assert!(
+            title.bottom() < 560.0 && title.left() >= 0.0,
+            "{title:?} outside the window"
+        );
+        // The trace is drawn: at least one line segment per history point pair.
+        let segments = output
+            .shapes
+            .iter()
+            .filter(|s| matches!(s.shape, egui::Shape::LineSegment { .. }))
+            .count();
+        assert!(segments > 30, "the graph drew {segments} segments");
+
+        // At the minimum window height the graph is dropped, and every row still fits.
+        let (output, theme) = window_frame(LayoutPreset::History, vec2(640.0, 380.0));
+        assert_readout_rows_fit(&output, &theme, "History at the minimum size");
+        let drawn = output.shapes.iter().any(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => text.galley.text() == "LOUDNESS HISTORY",
+            _ => false,
+        });
+        assert!(!drawn, "the graph must give way to the read-out");
     }
 
     #[test]
@@ -1732,6 +1883,7 @@ mod tests {
         let mut state = EditorState {
             theme: Theme::dark(),
             scope: ScopeView::new(),
+            history: HistoryView::new(),
             japanese_font_installed: false,
             japanese: None,
             japanese_check_pending: false,
@@ -1750,6 +1902,7 @@ mod tests {
         let mut state = EditorState {
             theme: Theme::dark(),
             scope: ScopeView::new(),
+            history: HistoryView::new(),
             japanese_font_installed: false,
             japanese: None,
             japanese_check_pending: false,

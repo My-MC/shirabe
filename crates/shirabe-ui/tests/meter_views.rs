@@ -39,13 +39,18 @@ fn scope(ctx: &mut Recorder, _painter: &Painter, rect: Rect) {
     ctx.calls.push((TileId::Scope, rect));
 }
 
-fn registry() -> [MeterView<Recorder>; 5] {
+fn history(ctx: &mut Recorder, _painter: &Painter, rect: Rect) {
+    ctx.calls.push((TileId::History, rect));
+}
+
+fn registry() -> [MeterView<Recorder>; 6] {
     [
         MeterView::new(TileId::Peak, peak),
         MeterView::new(TileId::Level, level),
         MeterView::new(TileId::Loudness, loudness),
         MeterView::new(TileId::Readout, readout),
         MeterView::new(TileId::Scope, scope),
+        MeterView::new(TileId::History, history),
     ]
 }
 
@@ -76,7 +81,10 @@ fn draw_calls(
 fn tile_ids_are_unique_and_stable() {
     let names: Vec<&str> = TileId::ALL.iter().map(|t| t.as_str()).collect();
     // Saved layout files will refer to these names: renaming one breaks them.
-    assert_eq!(names, ["peak", "level", "loudness", "readout", "scope"]);
+    assert_eq!(
+        names,
+        ["peak", "level", "loudness", "readout", "scope", "history"]
+    );
     for (index, tile) in TileId::ALL.iter().enumerate() {
         assert_eq!(tile.as_str().parse(), Ok(*tile));
         assert!(!names[index + 1..].contains(&tile.as_str()), "{tile:?}");
@@ -117,7 +125,11 @@ fn lookup_finds_each_registered_tile_once() {
 
 #[test]
 fn every_tile_of_every_preset_has_a_view() {
-    for preset in [LayoutPreset::Standard, LayoutPreset::Stereo] {
+    for preset in [
+        LayoutPreset::Standard,
+        LayoutPreset::Stereo,
+        LayoutPreset::History,
+    ] {
         for (w, h) in [
             (900.0, 400.0),
             (820.0, 500.0),
@@ -235,6 +247,41 @@ fn presets_keep_their_tile_order() {
         .collect();
     assert_eq!(
         ids,
+        [
+            TileId::Peak,
+            TileId::Level,
+            TileId::Loudness,
+            TileId::Readout
+        ]
+    );
+}
+
+#[test]
+fn the_history_preset_draws_its_graph_after_the_meters() {
+    let rect = area(900.0, 400.0);
+    let calls = draw_calls(LayoutPreset::History, rect, &registry());
+    let order: Vec<TileId> = calls.iter().map(|(tile, _)| *tile).collect();
+    // The graph is the last tile of the set, so it paints over nothing else.
+    assert_eq!(
+        order,
+        [
+            TileId::Peak,
+            TileId::Level,
+            TileId::Loudness,
+            TileId::Readout,
+            TileId::History
+        ]
+    );
+    let arrangement = arrange(LayoutPreset::History, rect);
+    for (tile, drawn) in calls {
+        assert_eq!(Some(drawn), arrangement.tile(tile), "{tile:?}");
+    }
+
+    // A short window drops the graph with the preset, not just with the view.
+    let calls = draw_calls(LayoutPreset::History, area(640.0, 300.0), &registry());
+    let order: Vec<TileId> = calls.iter().map(|(tile, _)| *tile).collect();
+    assert_eq!(
+        order,
         [
             TileId::Peak,
             TileId::Level,

@@ -151,6 +151,7 @@ texts! {
         "日本語の表示には Noto Sans CJK などの日本語フォントが必要です";
     layout_standard: "Standard", "標準";
     layout_stereo: "Stereo", "ステレオ";
+    layout_history: "History", "履歴";
 
     // Meter tiles.
     meter_reset_hint: "Double-click to reset integrated loudness, loudness range and maxima",
@@ -166,6 +167,10 @@ texts! {
     mode_custom: "Custom", "カスタム";
     mono_label: "MONO", "MONO";
     no_stereo_content: "no stereo content", "ステレオ成分がありません";
+    history_title: "LOUDNESS HISTORY", "ラウドネス履歴";
+    history_span_label: "3 min", "3 分";
+    history_time_axis: "s ago", "秒前";
+    history_waiting: "waiting for audio", "音声を待っています";
 
     // Loudness read-out.
     integrated: "INTEGRATED", "統合ラウドネス";

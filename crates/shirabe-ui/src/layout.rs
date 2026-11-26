@@ -26,6 +26,12 @@ pub const MAX_SCOPE_HEIGHT: f32 = COLUMN_WIDTH;
 pub const MIN_READOUT_HEIGHT: f32 = 80.0 + 7.0 * 19.0 + 14.0;
 /// Space for a loudness bar title, its read-outs, one usable bar and the caption.
 pub const MIN_LOUDNESS_HEIGHT: f32 = 110.0;
+/// Smallest readable height of the loudness history graph.
+pub const MIN_HISTORY_HEIGHT: f32 = 96.0;
+/// Share of the meter area the history graph takes when the window has room for it.
+const HISTORY_GRAPH_SHARE: f32 = 0.34;
+/// Largest height the history graph takes, so a tall window still shows the meters.
+const MAX_HISTORY_HEIGHT: f32 = 220.0;
 
 /// A built-in arrangement.
 ///
@@ -38,6 +44,8 @@ pub enum LayoutPreset {
     /// Peak and level stacked on the left, a full-height scope in the middle and the
     /// loudness bars above the read-out on the right.
     Stereo,
+    /// The Standard meters with a full-width loudness history graph along the bottom.
+    History,
 }
 
 /// One tile with the rectangle it occupies.
@@ -79,6 +87,7 @@ pub fn arrange(preset: LayoutPreset, rect: Rect) -> Arrangement {
     match preset {
         LayoutPreset::Standard => standard(rect),
         LayoutPreset::Stereo => stereo(rect),
+        LayoutPreset::History => history(rect),
     }
 }
 
@@ -175,6 +184,32 @@ fn stereo(rect: Rect) -> Arrangement {
     } else {
         arrangement.place(TileId::Readout, column);
     }
+    arrangement
+}
+
+/// The Standard meters with a full-width loudness history graph along the bottom.
+///
+/// The meters and the read-out keep the Standard geometry, so the numbers do not move when
+/// the view is selected. The graph is dropped before the read-out: a window too short for
+/// both shows the Standard meters without the scope, and the numeric loudness keeps every
+/// row. A tall window still has room for the scope above the graph.
+fn history(rect: Rect) -> Arrangement {
+    let needed = MIN_READOUT_HEIGHT + SECTION_GAP + MIN_HISTORY_HEIGHT;
+    if rect.height() < needed {
+        return standard(rect);
+    }
+    let graph_height = (rect.height() * HISTORY_GRAPH_SHARE)
+        .clamp(MIN_HISTORY_HEIGHT, MAX_HISTORY_HEIGHT)
+        .min(rect.height() - MIN_READOUT_HEIGHT - SECTION_GAP);
+    let meters = Rect::from_min_max(
+        rect.min,
+        pos2(rect.right(), rect.bottom() - graph_height - SECTION_GAP),
+    );
+    let mut arrangement = standard(meters);
+    arrangement.place(
+        TileId::History,
+        Rect::from_min_max(pos2(rect.left(), meters.bottom() + SECTION_GAP), rect.max),
+    );
     arrangement
 }
 

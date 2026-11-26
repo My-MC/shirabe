@@ -168,6 +168,11 @@ pub enum LayoutPreset {
     #[id = "stereo"]
     #[name = "Stereo"]
     Stereo,
+    /// The Standard meters with the loudness history graph along the bottom. Appended after
+    /// `stereo`, so saved projects and `standalone.json` keep their existing values.
+    #[id = "history"]
+    #[name = "History"]
+    History,
 }
 
 impl LayoutPreset {
@@ -176,6 +181,7 @@ impl LayoutPreset {
         match self {
             Self::Standard => shirabe_ui::layout::LayoutPreset::Standard,
             Self::Stereo => shirabe_ui::layout::LayoutPreset::Stereo,
+            Self::History => shirabe_ui::layout::LayoutPreset::History,
         }
     }
 }
@@ -536,6 +542,36 @@ mod tests {
             params.layout_preset.value().geometry(),
             shirabe_ui::layout::LayoutPreset::Standard
         );
+        let ids: Vec<String> = params
+            .param_map()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(ids[ids.len() - 2], "lay_preset");
+        assert_eq!(ids.last().map(String::as_str), Some("ui_lang"));
+    }
+
+    #[test]
+    fn the_history_layout_is_appended_with_a_stable_id() {
+        let params = ShirabeParams::default();
+        assert_eq!(params.layout_preset.value(), LayoutPreset::Standard);
+        assert!(params
+            .layout_preset
+            .flags()
+            .contains(ParamFlags::NON_AUTOMATABLE));
+        // Appending keeps the stored IDs of the existing layouts; nih-plug stores enum
+        // parameters by ID, and `standalone.json` stores the plain index.
+        assert_eq!(
+            LayoutPreset::ids(),
+            Some(&["standard", "stereo", "history"][..])
+        );
+        assert_eq!(LayoutPreset::from_index(1), LayoutPreset::Stereo);
+        assert_eq!(LayoutPreset::from_index(2), LayoutPreset::History);
+        assert_eq!(
+            LayoutPreset::History.geometry(),
+            shirabe_ui::layout::LayoutPreset::History
+        );
+        // No new parameter: the existing IDs keep their positions.
         let ids: Vec<String> = params
             .param_map()
             .into_iter()

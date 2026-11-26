@@ -5,7 +5,7 @@
 //! Values and the programme timer are compared before and after a language change.
 
 use nih_plug::prelude::*;
-use shirabe_plugin::editor::{draw, ScopeView};
+use shirabe_plugin::editor::{draw, HistoryView, ScopeView};
 use shirabe_plugin::params::{LoudnessTarget, UiLanguage};
 use shirabe_plugin::shared::SharedMeters;
 use shirabe_plugin::ShirabeParams;
@@ -105,6 +105,7 @@ fn render(
 ) -> Frame {
     let theme = Theme::dark();
     let mut scope = ScopeView::new();
+    let mut history = HistoryView::new();
     let ctx = egui::Context::default();
     let output = ctx.run(
         egui::RawInput {
@@ -114,7 +115,17 @@ fn render(
         |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let setter = ParamSetter { raw_context };
-                draw(ui, params, shared, &setter, &theme, &mut scope, text, true);
+                draw(
+                    ui,
+                    params,
+                    shared,
+                    &setter,
+                    &theme,
+                    &mut scope,
+                    &mut history,
+                    text,
+                    true,
+                );
             });
         },
     );

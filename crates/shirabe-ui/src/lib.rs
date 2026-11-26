@@ -4,6 +4,7 @@
 //! same widget can be used by the plugin editor, the standalone application and tests.
 
 pub mod bar;
+pub mod history;
 pub mod i18n;
 pub mod layout;
 pub mod scale;

@@ -135,6 +135,8 @@ impl MeterEngine {
         }
         self.programme_peak = MINUS_INFINITY_DB;
         self.loudness.reset_programme();
+        // The graph records the programme, so it starts over with it.
+        self.shared.history.clear();
     }
 
     /// Measures one block. `channels` holds one slice per channel, all of the same length.
@@ -142,6 +144,7 @@ impl MeterEngine {
     /// `playing` is the host transport state (used for the reset-on-play option).
     pub fn process(&mut self, channels: &mut [&mut [f32]], playing: bool) {
         let _denormals = DenormalGuard::new();
+        let frames = channels.first().map_or(0, |channel| channel.len());
         let transport_started = playing && !self.was_playing;
         self.was_playing = playing;
         let auto_reset = transport_started && self.params.auto_reset.value();
@@ -246,6 +249,15 @@ impl MeterEngine {
             .store(self.loudness.programme_seconds() as f32, Ordering::Relaxed);
         let loudness = self.loudness.readout();
         self.shared.loudness.store(&loudness);
+        // The graph records the programme measurement: it advances only while that measurement
+        // runs, so it freezes with Pause and starts over with Reset.
+        if integrating {
+            self.shared.history.record(
+                frames,
+                loudness.momentary.map(|v| v as f32),
+                loudness.short_term.map(|v| v as f32),
+            );
+        }
         self.shared.loudness.plr.store(
             loudness
                 .integrated

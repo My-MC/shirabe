@@ -120,6 +120,16 @@ mod tests {
             restored.layout_preset.value(),
             shirabe_plugin::params::LayoutPreset::Stereo
         );
+
+        // 2 = History, appended after Stereo so the older indices keep their meaning.
+        load_params(&params, &BTreeMap::from([("lay_preset".to_owned(), 2.0)]));
+        assert_eq!(
+            params.layout_preset.value(),
+            shirabe_plugin::params::LayoutPreset::History
+        );
+        let restored = ShirabeParams::default();
+        load_params(&restored, &save_params(&params));
+        assert_eq!(save_params(&restored).get("lay_preset"), Some(&2.0));
     }
 
     #[test]

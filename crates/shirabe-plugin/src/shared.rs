@@ -6,6 +6,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use nih_plug::prelude::AtomicF32;
+use shirabe_dsp::history::LoudnessHistory;
 use shirabe_dsp::scope::StereoScope;
 use shirabe_dsp::stereo::StereoStatsReadout;
 use shirabe_dsp::{ChannelLayout, LoudnessReadout, PeakMeter, MINUS_INFINITY_DB};
@@ -163,6 +164,9 @@ pub struct SharedMeters {
     /// Recent stereo frames for the Lissajous view (audio thread writes, editor reads).
     /// Empty while the input is mono.
     pub scope: StereoScope,
+    /// Momentary and short-term loudness at 10 points per second (audio thread writes, editor
+    /// reads). Display-only: it never feeds back into a measurement.
+    pub history: LoudnessHistory,
     active_channels: AtomicUsize,
     sample_rate: AtomicF32,
     reset_requested: AtomicBool,
@@ -182,6 +186,7 @@ impl SharedMeters {
             loudness: LoudnessShared::new(),
             stereo: StereoShared::new(),
             scope: StereoScope::new(),
+            history: LoudnessHistory::new(),
             active_channels: AtomicUsize::new(2),
             sample_rate: AtomicF32::new(0.0),
             reset_requested: AtomicBool::new(false),
@@ -196,6 +201,8 @@ impl SharedMeters {
         self.active_channels
             .store(channels.min(MAX_CHANNELS), Ordering::Relaxed);
         self.sample_rate.store(sample_rate, Ordering::Relaxed);
+        // A new rate needs a new interval; the old points describe the previous rate.
+        self.history.prepare(sample_rate);
         self.clear();
     }
 
@@ -208,6 +215,7 @@ impl SharedMeters {
         self.loudness.plr.store(None);
         self.stereo.clear();
         self.scope.clear();
+        self.history.clear();
     }
 
     /// Read-outs of channel `index` (must be below [`MAX_CHANNELS`]).

@@ -90,9 +90,26 @@ fn japanese_prose_is_really_japanese() {
         japanese.test_oscillator(),
         japanese.audio_api(),
         japanese.file_playback(),
+        japanese.history_title(),
+        japanese.history_waiting(),
+        japanese.layout_history(),
     ] {
         assert!(!text.is_ascii(), "{text:?} contains no Japanese characters");
     }
+}
+
+#[test]
+fn the_history_graph_and_layout_labels_are_translated() {
+    let english = Text::new(Lang::English, true);
+    let japanese = Text::new(Lang::Japanese, true);
+    assert_eq!(english.history_title(), "LOUDNESS HISTORY");
+    assert_eq!(japanese.history_title(), "ラウドネス履歴");
+    assert_eq!(english.history_span_label(), "3 min");
+    assert_eq!(japanese.history_span_label(), "3 分");
+    assert_eq!(english.history_time_axis(), "s ago");
+    assert_eq!(japanese.history_time_axis(), "秒前");
+    assert_eq!(english.layout_history(), "History");
+    assert_eq!(japanese.layout_history(), "履歴");
 }
 
 #[test]

@@ -11,6 +11,7 @@
 
 pub mod biquad;
 pub mod channel;
+pub mod history;
 pub mod kweighting;
 pub mod level;
 pub mod loudness;

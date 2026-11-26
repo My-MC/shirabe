@@ -20,16 +20,19 @@ pub enum TileId {
     Readout,
     /// Lissajous or L/R vectorscope view.
     Scope,
+    /// Momentary and short-term loudness over time.
+    History,
 }
 
 impl TileId {
     /// Every tile, in the order the editor draws them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Peak,
         Self::Level,
         Self::Loudness,
         Self::Readout,
         Self::Scope,
+        Self::History,
     ];
 
     /// Name used in a saved layout; stable forever.
@@ -40,6 +43,7 @@ impl TileId {
             Self::Loudness => "loudness",
             Self::Readout => "readout",
             Self::Scope => "scope",
+            Self::History => "history",
         }
     }
 }
