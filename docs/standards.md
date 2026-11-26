@@ -24,6 +24,8 @@ Shirabe の各メーターが従う規格・資料と、その対応状況をま
 | ARIB TR-B32 | 1.5-E1（英訳、1.5 版の全文） | ARIB から無償で入手。最新の 1.7 版は目次のみ確認 |
 | ATSC A/85 | 2013、2026-07 | ATSC から無償で入手 |
 | Spotify for Artists「Loudness normalization」 | 2026-11 時点 | 公式ヘルプページ |
+| Apple Podcasts for Creators「Audio requirements」 | 2026-11 時点 | 公式ページ |
+| Apple Video and Audio Asset Guide | 5.3.19（2026-09） | 公式ページ |
 | IEEE Std 152-1991（Audio Program Level Measurement） | 1991（1992 年発行） | 大学図書館経由で IEEE Xplore から入手（本文は再配布不可） |
 | IEC 60268-10 / -17 / -18 | — | 有料のため本文は未入手。冒頭のプレビューのみ確認 |
 | VU メーターの原論文（Chinn, Gannett, Morris, Proc. IRE, 1940） | 1940 | 公開されている写しと IEEE Xplore の版 |
@@ -69,6 +71,7 @@ Tech 3341 は EBU Mode の目標値を -23.0 LUFS（0 LU）と定めているた
 | EBU R 128 | -23 LUFS | ±1.0 LU（ライブなど目標値に合わせられない場合） | -1 dBTP | R 128 h)、m) |
 | ATSC A/85 | -24 LKFS | ±2 dB | -2 dBTP 未満 | A/85 §6 |
 | Spotify | -14 LUFS | 定めなし | -1 dBTP 未満 | Spotify for Artists |
+| Apple Podcasts | -16 LKFS | ±1 dB | -1 dBFS（トゥルーピーク）以下 | Apple Podcasts for Creators「Audio requirements」（BS.1770-5 で測定） |
 
 各プリセットについて、次の点に注意してください。
 
@@ -76,7 +79,13 @@ Tech 3341 は EBU Mode の目標値を -23.0 LUFS（0 LU）と定めているた
 - EBU R 128 は、品質管理での測定誤差として ±0.2 LU を認めています。
 - ATSC A/85 の 2026 年版は、長尺番組をダイアログゲート付きの BS.1770-1 で測定するよう定めています。Shirabe はダイアログゲートに対応していないため、このプリセットは短尺番組（全体のミックスを測定）の基準に相当します。
 - Spotify は、-14 LUFS より大きいマスターでは、トゥルーピークを -2 dBTP 未満にすることを勧めています。
-- Apple Music、YouTube、Amazon Music、TIDAL は、正規化の目標値を公式に公表していないため、プリセットにしていません。
+- 次のサービスは、ステレオ音源の正規化の目標値を公式に公表していないため、プリセットにしていません（2026-11-26 に各社の公式ヘルプと配信者向けページで確認）。
+  - Apple Music：Sound Check で音量をそろえると説明しているだけで、数値はありません。
+  - Amazon Music：アプリの「Loudness Normalization」設定の説明だけで、数値はありません。
+  - YouTube：「Stable volume」や音量の自動調整の説明だけで、数値はありません。
+  - Qobuz、TIDAL：正規化の目標値を説明したページが見つかりません。
+- Apple Music の Dolby Atmos と 5.1 / 7.1 の納品基準（-18 LKFS 以下、-1 dBTP 以下）は公表されています。ただし 5.1 にレンダリングした音声で測る決まりのため、サラウンドに対応するまでプリセットにしません。
+- Amazon が Alexa 向けの音声コンテンツに定めた基準（平均 -14 LUFS、トゥルーピーク -2 dBFS 以下）は、Amazon Music の正規化とは別のものなので、プリセットにしていません。
 
 ## VU メーター
 

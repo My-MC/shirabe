@@ -30,6 +30,11 @@ pub enum LoudnessTarget {
     #[id = "stream14"]
     #[name = "Spotify (-14 LUFS)"]
     Streaming14,
+    /// Apple Podcasts (Apple Podcasts for Creators, "Audio requirements"): -16 LKFS ±1 dB,
+    /// true peak not above -1 dBFS, measured per ITU-R BS.1770-5.
+    #[id = "applepod"]
+    #[name = "Apple Podcasts (-16 LKFS)"]
+    ApplePodcasts,
 }
 
 impl LoudnessTarget {
@@ -39,6 +44,7 @@ impl LoudnessTarget {
             Self::AribTrB32 | Self::AtscA85 => -24.0,
             Self::EbuR128 => -23.0,
             Self::Streaming14 => -14.0,
+            Self::ApplePodcasts => -16.0,
         }
     }
 
@@ -53,7 +59,7 @@ impl LoudnessTarget {
     /// Permitted tolerance around the target in LU, if the document defines one.
     pub fn tolerance(self) -> Option<f32> {
         match self {
-            Self::AribTrB32 | Self::EbuR128 => Some(1.0),
+            Self::AribTrB32 | Self::EbuR128 | Self::ApplePodcasts => Some(1.0),
             Self::AtscA85 => Some(2.0),
             Self::Streaming14 => None,
         }
@@ -62,7 +68,7 @@ impl LoudnessTarget {
     /// Unit name used by the document for absolute loudness values.
     pub fn unit(self) -> &'static str {
         match self {
-            Self::AribTrB32 | Self::AtscA85 => "LKFS",
+            Self::AribTrB32 | Self::AtscA85 | Self::ApplePodcasts => "LKFS",
             Self::EbuR128 | Self::Streaming14 => "LUFS",
         }
     }

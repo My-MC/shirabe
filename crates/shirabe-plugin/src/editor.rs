@@ -570,6 +570,7 @@ impl LoudnessView {
             LoudnessTarget::AribTrB32 => "TR-B32",
             LoudnessTarget::AtscA85 => "A/85",
             LoudnessTarget::Streaming14 => "Spotify",
+            LoudnessTarget::ApplePodcasts => "Apple Podcasts",
         }
     }
 }
@@ -792,6 +793,7 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
                 LoudnessTarget::EbuR128,
                 LoudnessTarget::AtscA85,
                 LoudnessTarget::Streaming14,
+                LoudnessTarget::ApplePodcasts,
             ],
             target_name,
         );
@@ -868,6 +870,7 @@ fn target_name(t: LoudnessTarget) -> &'static str {
         LoudnessTarget::EbuR128 => "EBU R 128  -23 LUFS",
         LoudnessTarget::AtscA85 => "ATSC A/85  -24 LKFS",
         LoudnessTarget::Streaming14 => "Spotify  -14 LUFS",
+        LoudnessTarget::ApplePodcasts => "Apple Podcasts  -16 LKFS",
     }
 }
 
