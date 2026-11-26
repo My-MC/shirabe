@@ -946,7 +946,7 @@ fn oscillator_controls(
             );
         } else {
             let note = if setter.raw_context.plugin_api() == PluginApi::Standalone {
-                "Measuring the input device"
+                "Measuring the selected source"
             } else {
                 "Pass-through, no latency"
             };

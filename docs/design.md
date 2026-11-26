@@ -26,6 +26,8 @@ Shirabe Meter Suite の構成、スレッド設計、メーターの仕様、互
 
 スタンドアロンアプリは、プラグインと同じ `MeterEngine` とエディターの描画関数（`editor::draw`）を使います。
 音声入力は `cpal` で直接開き、デバイスのサンプルレートと任意のバッファサイズをそのまま受け付けます。
+再生中の音は、Windows では WASAPI ループバック（`cpal`）、Linux では PulseAudio のモニター（`libpulse` を実行時に読み込み）、macOS 14.2 以降では Core Audio のプロセスタップ（実行時に関数を探す）で取り込みます。
+実行時に読み込むので、これらがない環境でもアプリは起動し、その項目だけが表示されません。
 パラメーターは、ホストの代わりにアプリ側の `GuiContext` 実装が直接書き換えます（nih-plug のフォークで `ParamPtr::set_normalized_value` を公開）。
 
 これにより、計測処理を `cargo test` だけで検証でき、他のプロジェクトからも再利用できます。

@@ -26,3 +26,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shirabe-plugin = { path = "../shirabe-plugin" }
 shirabe-ui.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Loads the PulseAudio client libraries at run time (also served by PipeWire).
+libloading = "0.8"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+objc2 = "0.6"
+objc2-core-audio = "0.3"
+objc2-core-audio-types = "0.3"
+objc2-core-foundation = "0.3"
+objc2-foundation = "0.3"

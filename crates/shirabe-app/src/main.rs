@@ -7,7 +7,12 @@
 
 mod audio;
 mod context;
+mod fonts;
+#[cfg(target_os = "linux")]
+mod pulse;
 mod settings;
+#[cfg(target_os = "macos")]
+mod tap;
 
 use std::sync::Arc;
 
@@ -18,7 +23,7 @@ use shirabe_plugin::shared::SharedMeters;
 use shirabe_plugin::{editor, ShirabeParams};
 use shirabe_ui::Theme;
 
-use audio::Source;
+use audio::{Choice, Source};
 use context::StandaloneContext;
 use settings::Settings;
 
@@ -32,7 +37,8 @@ struct App {
     start_error: Option<String>,
     hosts: Vec<String>,
     host: String,
-    devices: Vec<String>,
+    inputs: Vec<Choice>,
+    playing: Vec<Choice>,
     /// Parameter values at the last save, to save again only after a change.
     saved_params: std::collections::BTreeMap<String, f32>,
     last_check: std::time::Instant,
@@ -48,18 +54,19 @@ impl App {
         // meters are designed for the dark theme only.
         cc.egui_ctx.set_theme(egui::Theme::Dark);
         cc.egui_ctx.set_visuals_of(egui::Theme::Dark, visuals);
+        fonts::install(&cc.egui_ctx);
 
         let params = Arc::new(ShirabeParams::default());
         let settings = Settings::load();
         context::load_params(params.as_ref(), &settings.params);
         let source = settings
             .source
-            .unwrap_or_else(|| audio::default_input().unwrap_or_default());
+            .unwrap_or_else(|| audio::default_source().unwrap_or_default());
 
         let hosts = audio::hosts();
         let host = match &source {
-            Source::Input { host, .. } => host.clone(),
-            Source::None => hosts.first().cloned().unwrap_or_default(),
+            Source::Input { host, .. } | Source::Output { host, .. } => host.clone(),
+            _ => cpal_default_host(&hosts),
         };
         let mut app = Self {
             params,
@@ -69,7 +76,8 @@ impl App {
             source: Source::None,
             running: None,
             start_error: None,
-            devices: audio::input_devices(&host),
+            inputs: audio::inputs(&host),
+            playing: audio::playing(&host),
             hosts,
             host,
             saved_params: settings.params,
@@ -120,6 +128,11 @@ impl App {
         }
     }
 
+    fn refresh_devices(&mut self) {
+        self.inputs = audio::inputs(&self.host);
+        self.playing = audio::playing(&self.host);
+    }
+
     fn audio_bar(&mut self, ui: &mut egui::Ui) {
         let mut new_source = None;
         ui.horizontal(|ui| {
@@ -133,27 +146,47 @@ impl App {
                     }
                 });
             if self.host != previous_host {
-                self.devices = audio::input_devices(&self.host);
+                self.refresh_devices();
             }
 
-            ui.label("Input");
-            let current = match &self.source {
-                Source::Input { device, host } if *host == self.host => device.clone(),
-                _ => "None".to_owned(),
-            };
-            egui::ComboBox::from_id_salt("audio-input")
-                .width(260.0)
+            ui.label("Source");
+            let current = self
+                .inputs
+                .iter()
+                .chain(&self.playing)
+                .find(|c| c.source == self.source)
+                .map_or_else(|| "None".to_owned(), |c| c.label.clone());
+            egui::ComboBox::from_id_salt("audio-source")
+                .width(300.0)
                 .selected_text(current.as_str())
                 .show_ui(ui, |ui| {
-                    if ui.selectable_label(current == "None", "None").clicked() {
+                    if ui
+                        .selectable_label(self.source == Source::None, "None")
+                        .clicked()
+                    {
                         new_source = Some(Source::None);
                     }
-                    for d in &self.devices {
-                        if ui.selectable_label(*d == current, d.as_str()).clicked() {
-                            new_source = Some(Source::Input {
-                                host: self.host.clone(),
-                                device: d.clone(),
-                            });
+                    let groups = [
+                        ("Inputs", &self.inputs),
+                        ("Playing on this computer", &self.playing),
+                    ];
+                    for (title, list) in groups {
+                        if list.is_empty() {
+                            continue;
+                        }
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(title)
+                                .small()
+                                .color(self.theme.text_dim),
+                        );
+                        for c in list {
+                            if ui
+                                .selectable_label(c.source == self.source, c.label.as_str())
+                                .clicked()
+                            {
+                                new_source = Some(c.source.clone());
+                            }
                         }
                     }
                 });
@@ -163,7 +196,7 @@ impl App {
                 .clicked()
             {
                 self.hosts = audio::hosts();
-                self.devices = audio::input_devices(&self.host);
+                self.refresh_devices();
             }
         });
         ui.horizontal(|ui| {
@@ -208,6 +241,16 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_settings();
+    }
+}
+
+/// The audio API cpal uses by default, if it is in `hosts`.
+fn cpal_default_host(hosts: &[String]) -> String {
+    let name = cpal::default_host().id().name().to_owned();
+    if hosts.contains(&name) {
+        name
+    } else {
+        hosts.first().cloned().unwrap_or_default()
     }
 }
 

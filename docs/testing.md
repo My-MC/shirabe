@@ -155,3 +155,40 @@ ffmpeg -re -f lavfi -i "aevalsrc=0.125893*sin(2*PI*1000*t)|0.0630957*sin(2*PI*10
 | ピーク / トゥルーピーク | L -18.0 / R -24.0 |
 | VU | L +0.0 / R -6.0 |
 | Integrated | -20.0 LKFS |
+
+## スタンドアロンアプリの再生音の確認
+
+### Linux（PulseAudio / PipeWire）
+
+PulseAudio に仮想の出力を作り、そこに試験信号を流して「Playing on this computer」の項目で測定します。
+
+次のコマンドで、44.1 kHz の仮想出力を作ります。
+
+```sh
+pactl load-module module-null-sink sink_name=testsink rate=44100 sink_properties=device.description=TestSink
+```
+
+次のコマンドで、L -18 dBFS / R -24 dBFS の 1 kHz 正弦波を仮想出力に流します。
+
+```sh
+ffmpeg -re -f lavfi -i "aevalsrc=0.125893*sin(2*PI*1000*t)|0.0630957*sin(2*PI*1000*t):s=44100:d=60" -f pulse -device testsink shirabe-test
+```
+
+「Source」で `TestSink (playing)` を選ぶと、入力の確認と同じ値（ピーク L -18.0 / R -24.0、VU L +0.0 / R -6.0、Integrated -20.0 LKFS）になります。
+再生を止めると、VU と Momentary は -inf に戻ります（2026-11-26 に確認）。
+
+### Windows（WASAPI ループバック）
+
+「Audio API」で WASAPI を選ぶと、出力デバイスが `(playing)` 付きで表示されます。
+2026-11-26 に、音声デバイスのない Windows 11 の仮想マシンで、リモートデスクトップの「リモート オーディオ」（44.1 kHz）を使って次のことを確認しました。
+
+| 確認したこと | 結果 |
+|---|---|
+| L -18 / R -24 dBFS の WAV を Windows 標準の機能で再生 | ピーク L -18.0 / R -24.0、VU L +0.0 / R -6.0、Integrated -20.0 LKFS |
+| 再生が止まったあと | VU と Momentary が -inf に戻る |
+| 日本語のデバイス名 | OS の日本語フォントで表示 |
+
+### macOS
+
+macOS 版はビルドが通ることだけを CI で確認しています。
+実機での確認は済んでいません。
