@@ -7,8 +7,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Number of stereo frames kept for the display (32 KiB). The editor reads fewer than this,
-/// so a frame is never overwritten while it is being copied in practice.
+/// Number of stereo frames kept for the display (32 KiB). A single packed frame is atomic;
+/// a slow reader can still copy frames from different generations if the writer laps it.
 pub const SCOPE_CAPACITY: usize = 4096;
 
 /// Packs two samples into one atomic word so that a frame is never torn.
@@ -52,7 +52,8 @@ impl StereoScope {
         }
     }
 
-    /// Discards every captured frame (audio thread, outside the callback, or during reset).
+    /// Discards every captured frame. Only the producer may call this while capturing;
+    /// other callers must first stop the producer.
     pub fn clear(&self) {
         self.written.store(0, Ordering::Relaxed);
     }

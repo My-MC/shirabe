@@ -44,9 +44,9 @@ const COLUMN_GAP: f32 = 10.0;
 /// Smallest readable height of the Lissajous square.
 const MIN_SCOPE_HEIGHT: f32 = 96.0;
 /// The Lissajous view stops growing here so a tall window leaves the panel room.
-const MAX_SCOPE_HEIGHT: f32 = 200.0;
-/// The loudness panel needs about this much height to show its main values.
-const MIN_PANEL_HEIGHT: f32 = 190.0;
+const MAX_SCOPE_HEIGHT: f32 = COLUMN_WIDTH;
+/// Space for the heading, all seven loudness rows and the LRA stability note.
+const MIN_PANEL_HEIGHT: f32 = 80.0 + 7.0 * 19.0 + 14.0;
 
 /// Alignment level in dBFS (EBU R 68): TEST on the EBU and IEEE scales, mark 4 on the BBC scale.
 const ALIGNMENT_DBFS: f32 = -18.0;
@@ -74,7 +74,7 @@ pub(crate) fn create(
             ctx.request_repaint();
 
             ResizableWindow::new("shirabe-main")
-                .min_size(vec2(720.0, 420.0))
+                .min_size(vec2(640.0, 380.0))
                 .show(ctx, egui_state.as_ref(), |ui| {
                     egui::Frame::default()
                         .inner_margin(egui::Margin::same(8))
@@ -341,7 +341,9 @@ fn split_column(rect: Rect) -> (Rect, Option<Rect>) {
     if height < MIN_PANEL_HEIGHT + MIN_SCOPE_HEIGHT + COLUMN_GAP {
         return (rect, None);
     }
-    let scope_height = (height * 0.38).clamp(MIN_SCOPE_HEIGHT, MAX_SCOPE_HEIGHT);
+    let scope_height = (height * 0.38)
+        .clamp(MIN_SCOPE_HEIGHT, MAX_SCOPE_HEIGHT)
+        .min(height - MIN_PANEL_HEIGHT - COLUMN_GAP);
     let scope_top = rect.bottom() - scope_height;
     let panel = Rect::from_min_max(rect.min, pos2(rect.right(), scope_top - COLUMN_GAP));
     let scope = Rect::from_min_max(pos2(rect.left(), scope_top), rect.max);
@@ -1090,6 +1092,18 @@ mod tests {
         assert_eq!(scope.top(), 248.0);
         assert_eq!(scope.bottom(), 400.0);
         assert_eq!(scope.width(), COLUMN_WIDTH);
+    }
+
+    #[test]
+    fn scope_never_takes_height_needed_for_loudness_rows_and_lra_note() {
+        for height in 296..400 {
+            let (panel, scope) = split_column(column(height as f32));
+            if let Some(scope) = scope {
+                assert!(panel.height() >= 227.0, "loudness rows clipped at {height}");
+                assert!(scope.height() >= MIN_SCOPE_HEIGHT);
+            }
+        }
+        assert!(split_column(column(333.0)).1.is_some());
     }
 
     #[test]
