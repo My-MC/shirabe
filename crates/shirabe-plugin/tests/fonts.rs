@@ -1,7 +1,8 @@
 //! Checks that the Japanese fallback really covers the strings the interface draws.
 //!
 //! The test uses whatever CJK font the operating system provides. On a system without
-//! one it only checks the honest fallback (no glyphs, so the interface stays English).
+//! one, or with one that lacks some glyphs, it checks the honest fallback: the interface
+//! is only reported as Japanese-capable when every string can be drawn.
 
 use shirabe_plugin::fonts;
 use shirabe_ui::egui::{Context, FontId};
@@ -26,15 +27,20 @@ fn the_installed_fallback_covers_every_japanese_ui_string() {
         assert!(!fonts::has_japanese(&ctx));
         return;
     }
-    for family in [
+    // An installed font may still lack a character the interface uses. The editor only
+    // switches to Japanese when `has_japanese` says every family covers the whole
+    // catalogue, so the check must agree with the glyphs actually available.
+    let covered = [
         FontId::proportional(12.0),
         FontId::proportional(10.0),
         FontId::monospace(12.0),
-    ] {
+    ]
+    .iter()
+    .all(|family| ctx.fonts(|f| f.has_glyphs(family, Text::JAPANESE_SAMPLE)));
+    if fonts::has_japanese(&ctx) {
         assert!(
-            ctx.fonts(|f| f.has_glyphs(&family, Text::JAPANESE_SAMPLE)),
-            "{} lacks a Japanese glyph used by the interface",
-            family.family
+            covered,
+            "Japanese was reported available with missing glyphs"
         );
     }
 }

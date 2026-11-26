@@ -30,16 +30,40 @@ fn candidates() -> Vec<String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         // Ask fontconfig first; fall back to the usual Noto CJK locations.
-        if let Ok(out) = std::process::Command::new("fc-match")
-            .args(["-f", "%{file}", "sans-serif:lang=ja"])
-            .output()
-        {
-            if out.status.success() {
-                list.push(String::from_utf8_lossy(&out.stdout).into_owned());
-            }
-        }
+        let run = |args: &[&str]| {
+            std::process::Command::new(args[0])
+                .args(&args[1..])
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+                .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        };
+        let matched = run(&["fc-match", "-f", "%{file}", "sans-serif:lang=ja"]);
+        let japanese: Vec<String> = run(&["fc-list", "-f", "%{file}\n", ":lang=ja"])
+            .map(|text| text.lines().map(str::to_owned).collect())
+            .unwrap_or_default();
+        list.extend(fontconfig_candidates(matched, &japanese));
         list.push("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".to_owned());
         list.push("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc".to_owned());
+    }
+    list
+}
+
+/// Orders fontconfig results so only fonts declaring Japanese support are tried.
+///
+/// `fc-match` always answers, and on a system without a CJK font it names a Latin font
+/// such as DejaVu Sans. Using that file would install a fallback that cannot draw the
+/// Japanese interface, so the match is kept only when `fc-list :lang=ja` also lists it.
+#[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
+fn fontconfig_candidates(matched: Option<String>, japanese: &[String]) -> Vec<String> {
+    let mut list = Vec::new();
+    if let Some(file) = matched.filter(|file| japanese.contains(file)) {
+        list.push(file);
+    }
+    for file in japanese {
+        if !file.is_empty() && !list.contains(file) {
+            list.push(file.clone());
+        }
     }
     list
 }
@@ -85,6 +109,20 @@ pub fn has_japanese(ctx: &Context) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fontconfig_match_without_japanese_support_is_skipped() {
+        let ja = vec!["/fonts/cjk.ttc".to_owned()];
+        assert_eq!(
+            fontconfig_candidates(Some("/fonts/DejaVuSans.ttf".to_owned()), &ja),
+            ja
+        );
+        assert_eq!(
+            fontconfig_candidates(Some("/fonts/cjk.ttc".to_owned()), &ja),
+            ja
+        );
+        assert!(fontconfig_candidates(Some("/fonts/DejaVuSans.ttf".to_owned()), &[]).is_empty());
+    }
 
     #[test]
     fn candidates_are_never_empty_strings() {
