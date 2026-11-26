@@ -7,7 +7,7 @@
 
 use shirabe_ui::egui::{pos2, vec2, Rect};
 use shirabe_ui::layout::{
-    arrange, LayoutPreset, Tile, COLUMN_WIDTH, MIN_READOUT_HEIGHT, SECTION_GAP,
+    arrange, LayoutPreset, TileId, COLUMN_WIDTH, MIN_READOUT_HEIGHT, SECTION_GAP,
 };
 
 fn area(width: f32, height: f32) -> Rect {
@@ -55,28 +55,28 @@ fn standard_reproduces_the_existing_arrangement() {
     let arrangement = arrange(LayoutPreset::Standard, rect);
     let meters = rect.width() - COLUMN_WIDTH - 3.0 * SECTION_GAP;
 
-    let peak = arrangement.tile(Tile::Peak).expect("peak section");
+    let peak = arrangement.tile(TileId::Peak).expect("peak section");
     assert!(close(peak.width(), meters * 0.38));
     assert!(close(peak.left(), 0.0));
     assert!(close(peak.height(), rect.height()));
 
-    let level = arrangement.tile(Tile::Level).expect("level section");
+    let level = arrangement.tile(TileId::Level).expect("level section");
     assert!(close(level.width(), meters * 0.37));
     assert!(close(level.left(), peak.right() + SECTION_GAP));
 
-    let loudness = arrangement.tile(Tile::Loudness).expect("loudness bars");
+    let loudness = arrangement.tile(TileId::Loudness).expect("loudness bars");
     assert!(close(loudness.left(), level.right() + SECTION_GAP));
     assert!(close(
         loudness.right(),
         rect.right() - COLUMN_WIDTH - SECTION_GAP
     ));
 
-    let readout = arrangement.tile(Tile::Readout).expect("read-out");
+    let readout = arrangement.tile(TileId::Readout).expect("read-out");
     assert!(close(readout.left(), rect.right() - COLUMN_WIDTH));
     assert!(close(readout.width(), COLUMN_WIDTH));
     assert!(close(readout.height(), 238.0));
 
-    let scope = arrangement.tile(Tile::Scope).expect("scope");
+    let scope = arrangement.tile(TileId::Scope).expect("scope");
     assert!(close(scope.top(), 248.0));
     assert!(close(scope.bottom(), 400.0));
     assert!(close(scope.width(), COLUMN_WIDTH));
@@ -86,16 +86,16 @@ fn standard_reproduces_the_existing_arrangement() {
 fn standard_hides_only_the_scope_in_a_short_window() {
     let rect = area(820.0, 240.0);
     let arrangement = arrange(LayoutPreset::Standard, rect);
-    assert!(arrangement.tile(Tile::Scope).is_none());
-    let readout = arrangement.tile(Tile::Readout).expect("read-out");
+    assert!(arrangement.tile(TileId::Scope).is_none());
+    let readout = arrangement.tile(TileId::Readout).expect("read-out");
     // The read-out keeps the full height of the right-hand column.
     assert!(close(readout.left(), rect.right() - COLUMN_WIDTH));
     assert!(close(readout.right(), rect.right()));
     assert!(close(readout.top(), rect.top()));
     assert!(close(readout.bottom(), rect.bottom()));
-    assert!(arrangement.tile(Tile::Peak).is_some());
-    assert!(arrangement.tile(Tile::Level).is_some());
-    assert!(arrangement.tile(Tile::Loudness).is_some());
+    assert!(arrangement.tile(TileId::Peak).is_some());
+    assert!(arrangement.tile(TileId::Level).is_some());
+    assert!(arrangement.tile(TileId::Loudness).is_some());
     assert_tiles_fit(LayoutPreset::Standard, rect);
 }
 
@@ -103,11 +103,11 @@ fn standard_hides_only_the_scope_in_a_short_window() {
 fn stereo_gives_the_scope_the_largest_area() {
     let rect = area(900.0, 400.0);
     let arrangement = arrange(LayoutPreset::Stereo, rect);
-    let scope = arrangement.tile(Tile::Scope).expect("stereo scope");
-    let peak = arrangement.tile(Tile::Peak).expect("peak");
-    let level = arrangement.tile(Tile::Level).expect("level");
-    let loudness = arrangement.tile(Tile::Loudness).expect("loudness");
-    let readout = arrangement.tile(Tile::Readout).expect("read-out");
+    let scope = arrangement.tile(TileId::Scope).expect("stereo scope");
+    let peak = arrangement.tile(TileId::Peak).expect("peak");
+    let level = arrangement.tile(TileId::Level).expect("level");
+    let loudness = arrangement.tile(TileId::Loudness).expect("loudness");
+    let readout = arrangement.tile(TileId::Readout).expect("read-out");
 
     // Full-height scope in the middle, bars stacked on the left, loudness on the right.
     assert!(close(scope.height(), rect.height()));
@@ -126,7 +126,7 @@ fn stereo_gives_the_scope_the_largest_area() {
     assert!(scope_area > loudness.width() * loudness.height());
 
     let standard = arrange(LayoutPreset::Standard, rect)
-        .tile(Tile::Scope)
+        .tile(TileId::Scope)
         .expect("standard scope");
     assert!(scope.width() > standard.width() * 1.5);
     assert_tiles_fit(LayoutPreset::Stereo, rect);
@@ -137,16 +137,16 @@ fn stereo_keeps_the_read_out_when_the_window_is_short() {
     // 640x260 is below the height that fits both the loudness bars and the read-out.
     let rect = area(640.0, 260.0);
     let arrangement = arrange(LayoutPreset::Stereo, rect);
-    assert!(arrangement.tile(Tile::Loudness).is_none());
-    let readout = arrangement.tile(Tile::Readout).expect("read-out");
+    assert!(arrangement.tile(TileId::Loudness).is_none());
+    let readout = arrangement.tile(TileId::Readout).expect("read-out");
     assert!(readout.height() >= MIN_READOUT_HEIGHT);
     assert_tiles_fit(LayoutPreset::Stereo, rect);
 
     // An extremely short viewport still places the read-out and drops the scope.
     let tiny = area(640.0, 80.0);
     let arrangement = arrange(LayoutPreset::Stereo, tiny);
-    assert!(arrangement.tile(Tile::Scope).is_none());
-    assert!(arrangement.tile(Tile::Readout).is_some());
+    assert!(arrangement.tile(TileId::Scope).is_none());
+    assert!(arrangement.tile(TileId::Readout).is_some());
     assert_tiles_fit(LayoutPreset::Stereo, tiny);
 }
 

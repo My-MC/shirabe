@@ -15,11 +15,12 @@ use shirabe_ui::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Painter, Rect, RichText, Sense,
     Stroke,
 };
-use shirabe_ui::layout::{arrange, Tile};
+use shirabe_ui::layout::{arrange, TileId};
 use shirabe_ui::scope::{
     draw as draw_scope, is_clipped, AutoGain, ScopePlane, ScopeRender, Trail, MAX_POINTS,
     TRAIL_CAPACITY, TRAIL_SECONDS,
 };
+use shirabe_ui::view::{MeterView, MeterViewRegistry};
 use shirabe_ui::{
     draw_level_bar, draw_marker, draw_scale_labels, format_db, format_lufs, MeterScale, Theme, Zone,
 };
@@ -361,31 +362,101 @@ fn meters(
         .clamp(1, crate::shared::MAX_CHANNELS);
     let target = params.target_spec();
 
-    // The preset decides where the tiles go; the sections only draw into their rectangle.
+    // The preset decides which tiles exist and where they go; the registered view of each
+    // tile draws into its rectangle.
     let arrangement = arrange(params.layout_preset.value().geometry(), rect);
-    if let Some(peak_rect) = arrangement.tile(Tile::Peak) {
-        peak_section(&painter, peak_rect, shared, theme, channels, target);
+    let loudness = LoudnessView::new(params);
+    let mut ctx = MeterCtx {
+        shared,
+        params,
+        theme,
+        loudness: &loudness,
+        scope,
+        now,
+        channels,
+        target,
+    };
+    let table = editor_views();
+    let views = MeterViewRegistry::new(&table).expect("every tile is registered once");
+    views.draw(&painter, &arrangement, &mut ctx);
+}
+
+/// The state the tile views read while drawing one frame.
+struct MeterCtx<'a> {
+    shared: &'a SharedMeters,
+    params: &'a ShirabeParams,
+    theme: &'a Theme,
+    /// Loudness settings resolved once per frame and shared by two tiles.
+    loudness: &'a LoudnessView,
+    scope: &'a mut ScopeView,
+    now: f64,
+    channels: usize,
+    target: TargetSpec,
+}
+
+/// The view that draws `id`.
+///
+/// The match is exhaustive over the tile set, so a new tile does not compile until it has a
+/// view, and `TileId::ALL` builds the table without repeating an identifier.
+fn tile_view(id: TileId) -> fn(&mut MeterCtx<'_>, &Painter, Rect) {
+    match id {
+        TileId::Peak => tile_peak,
+        TileId::Level => tile_level,
+        TileId::Loudness => tile_loudness,
+        TileId::Readout => tile_readout,
+        TileId::Scope => tile_scope,
     }
-    if let Some(level_rect) = arrangement.tile(Tile::Level) {
-        level_section(
-            &painter,
-            level_rect,
-            shared,
-            theme,
-            channels,
-            (params.level_mode.value(), params.vu_needle.value()),
-        );
-    }
-    let view = LoudnessView::new(params);
-    if let Some(lufs_rect) = arrangement.tile(Tile::Loudness) {
-        loudness_section(&painter, lufs_rect, shared, theme, &view);
-    }
-    if let Some(panel_rect) = arrangement.tile(Tile::Readout) {
-        loudness_panel(&painter, panel_rect, shared, theme, &view, channels);
-    }
-    if let Some(scope_rect) = arrangement.tile(Tile::Scope) {
-        scope_section(&painter, scope_rect, shared, params, theme, scope, now);
-    }
+}
+
+/// Every tile view in drawing order.
+///
+/// The order is the one that shipped with the presets: a tile may paint its heading just
+/// outside its rectangle, so the later tiles must stay on top.
+fn editor_views<'a>() -> [MeterView<MeterCtx<'a>>; TileId::ALL.len()] {
+    TileId::ALL.map(|id| MeterView::new(id, tile_view(id)))
+}
+
+fn tile_peak(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
+    peak_section(
+        painter,
+        rect,
+        ctx.shared,
+        ctx.theme,
+        ctx.channels,
+        ctx.target,
+    );
+}
+
+fn tile_level(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
+    level_section(
+        painter,
+        rect,
+        ctx.shared,
+        ctx.theme,
+        ctx.channels,
+        (ctx.params.level_mode.value(), ctx.params.vu_needle.value()),
+    );
+}
+
+fn tile_loudness(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
+    loudness_section(painter, rect, ctx.shared, ctx.theme, ctx.loudness);
+}
+
+fn tile_readout(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
+    loudness_panel(
+        painter,
+        rect,
+        ctx.shared,
+        ctx.theme,
+        ctx.loudness,
+        ctx.channels,
+    );
+}
+
+fn tile_scope(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
+    scope_section(
+        painter, rect, ctx.shared, ctx.params, ctx.theme, ctx.scope, ctx.now,
+    );
 }
 
 /// Draws the Lissajous view from the captured stereo frames.
@@ -1385,6 +1456,24 @@ fn short_number(v: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_editor_registers_every_tile_once() {
+        let views = editor_views();
+        let registry = MeterViewRegistry::new(&views).expect("the tiles are unique");
+        assert_eq!(registry.views().len(), TileId::ALL.len());
+        for tile in TileId::ALL {
+            assert!(registry.get(tile).is_some(), "{tile} has no view");
+        }
+        for preset in [LayoutPreset::Standard, LayoutPreset::Stereo] {
+            for size in [vec2(820.0, 500.0), vec2(640.0, 260.0)] {
+                let rect = Rect::from_min_size(pos2(0.0, 0.0), size);
+                let arrangement = arrange(preset.geometry(), rect);
+                let missing: Vec<TileId> = registry.missing(&arrangement).collect();
+                assert!(missing.is_empty(), "{preset:?} {size:?}: {missing:?}");
+            }
+        }
+    }
 
     #[test]
     fn minimum_custom_window_shows_all_readouts_and_unstable_lra_note() {

@@ -8,6 +8,7 @@
 //! pinned by tests: changing them moves meters under existing users.
 
 use crate::egui::{pos2, Rect};
+pub use crate::tile::{TileId, UnknownTile};
 
 /// Horizontal gap between the bar sections.
 pub const SECTION_GAP: f32 = 14.0;
@@ -26,21 +27,6 @@ pub const MIN_READOUT_HEIGHT: f32 = 80.0 + 7.0 * 19.0 + 14.0;
 /// Space for a loudness bar title, its read-outs, one usable bar and the caption.
 pub const MIN_LOUDNESS_HEIGHT: f32 = 110.0;
 
-/// A meter tile placed by the layout.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tile {
-    /// Sample peak and true-peak bars.
-    Peak,
-    /// VU or PPM bars (or needles).
-    Level,
-    /// Momentary and short-term loudness bars.
-    Loudness,
-    /// Numeric loudness read-out.
-    Readout,
-    /// Lissajous or L/R vectorscope view.
-    Scope,
-}
-
 /// A built-in arrangement.
 ///
 /// The stored parameter carries its own enum (with nih-plug IDs); this one is the geometry
@@ -58,7 +44,7 @@ pub enum LayoutPreset {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placement {
     /// The tile.
-    pub tile: Tile,
+    pub tile: TileId,
     /// Where it is drawn.
     pub rect: Rect,
 }
@@ -70,7 +56,7 @@ pub struct Arrangement {
 }
 
 impl Arrangement {
-    fn place(&mut self, tile: Tile, rect: Rect) {
+    fn place(&mut self, tile: TileId, rect: Rect) {
         self.placements.push(Placement { tile, rect });
     }
 
@@ -80,7 +66,7 @@ impl Arrangement {
     }
 
     /// Rectangle of `tile`, if this arrangement shows it.
-    pub fn tile(&self, tile: Tile) -> Option<Rect> {
+    pub fn tile(&self, tile: TileId) -> Option<Rect> {
         self.placements
             .iter()
             .find(|p| p.tile == tile)
@@ -115,13 +101,13 @@ fn standard(rect: Rect) -> Arrangement {
     let column = take(COLUMN_WIDTH);
 
     let mut arrangement = Arrangement::default();
-    arrangement.place(Tile::Peak, peak);
-    arrangement.place(Tile::Level, level);
-    arrangement.place(Tile::Loudness, lufs);
+    arrangement.place(TileId::Peak, peak);
+    arrangement.place(TileId::Level, level);
+    arrangement.place(TileId::Loudness, lufs);
     let (readout, scope) = split_column(column);
-    arrangement.place(Tile::Readout, readout);
+    arrangement.place(TileId::Readout, readout);
     if let Some(scope) = scope {
-        arrangement.place(Tile::Scope, scope);
+        arrangement.place(TileId::Scope, scope);
     }
     arrangement
 }
@@ -167,11 +153,11 @@ fn stereo(rect: Rect) -> Arrangement {
     let half = ((left.height() - SECTION_GAP) * 0.5).max(0.0);
     let peak = Rect::from_min_max(left.min, pos2(left.right(), left.top() + half));
     let level = Rect::from_min_max(pos2(left.left(), peak.bottom() + SECTION_GAP), left.max);
-    arrangement.place(Tile::Peak, peak);
-    arrangement.place(Tile::Level, level);
+    arrangement.place(TileId::Peak, peak);
+    arrangement.place(TileId::Level, level);
 
     if scope_width >= MIN_SCOPE_WIDTH && scope.height() >= MIN_SCOPE_HEIGHT {
-        arrangement.place(Tile::Scope, scope);
+        arrangement.place(TileId::Scope, scope);
     }
 
     if column.height() >= MIN_READOUT_HEIGHT + SECTION_GAP + MIN_LOUDNESS_HEIGHT {
@@ -184,10 +170,10 @@ fn stereo(rect: Rect) -> Arrangement {
             pos2(column.left(), loudness.bottom() + SECTION_GAP),
             column.max,
         );
-        arrangement.place(Tile::Loudness, loudness);
-        arrangement.place(Tile::Readout, readout);
+        arrangement.place(TileId::Loudness, loudness);
+        arrangement.place(TileId::Readout, readout);
     } else {
-        arrangement.place(Tile::Readout, column);
+        arrangement.place(TileId::Readout, column);
     }
     arrangement
 }

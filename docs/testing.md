@@ -246,6 +246,17 @@ ffmpeg -f lavfi -i "aevalsrc=0.5*sin(2*PI*1000*t)|-0.5*sin(2*PI*1000*t):s=48000:
 cargo test -p shirabe-ui --test layout_presets
 ```
 
+タイルの描画の登録表は、識別子の一意性、2 つのプリセットが置くタイルの引き当て、描画の順序と矩形を自動テストで確認します。
+
+```sh
+cargo test -p shirabe-ui --test meter_views
+cargo test -p shirabe-plugin the_editor_registers_every_tile_once
+```
+
+登録表を導入しても描画が変わっていないことは、導入前と導入後のスタンドアロンアプリを同じ設定（Source: None、テストオシレーター -18 dBFS、820×560）で起動し、画面を撮影して比べました。
+Standard と Stereo のどちらも、導入前のビルドの画面と 1 ピクセルも違いませんでした。
+Standard ではプログラムタイマーと残光が実行ごとにわずかに変わるため、導入前のビルドを 2 回撮影した画面とも一致することを確認しています。
+
 ## GPU のない環境での動作
 
 エディターは OpenGL 3.2 で描画します。
