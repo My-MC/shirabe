@@ -26,7 +26,10 @@ use eframe::egui;
 use nih_plug::prelude::ParamSetter;
 use shirabe_plugin::engine::MeterEngine;
 use shirabe_plugin::shared::SharedMeters;
-use shirabe_plugin::{editor, ShirabeParams};
+use shirabe_plugin::{
+    editor::{self, ScopeView},
+    ShirabeParams,
+};
 use shirabe_ui::Theme;
 
 use audio::{Choice, Source};
@@ -55,6 +58,8 @@ struct App {
     file: String,
     /// Parameter values at the last save, to save again only after a change.
     saved_params: std::collections::BTreeMap<String, f32>,
+    /// Display-only history of the Lissajous view.
+    scope: ScopeView,
     last_check: std::time::Instant,
 }
 
@@ -103,6 +108,7 @@ impl App {
             hosts,
             host,
             saved_params: settings.params.clone(),
+            scope: ScopeView::new(),
             last_check: std::time::Instant::now(),
         };
         // A saved file is not started automatically; the user presses Play.
@@ -419,7 +425,14 @@ impl eframe::App for App {
             let setter = ParamSetter {
                 raw_context: &self.context,
             };
-            editor::draw(ui, &self.params, &self.shared, &setter, &self.theme);
+            editor::draw(
+                ui,
+                &self.params,
+                &self.shared,
+                &setter,
+                &self.theme,
+                &mut self.scope,
+            );
         });
     }
 

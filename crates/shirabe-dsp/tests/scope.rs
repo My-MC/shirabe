@@ -105,3 +105,84 @@ fn quadrature_signal_traces_a_circle_of_radius_one_over_root_two() {
 fn silence_maps_to_the_centre() {
     assert_eq!(mid_side(0.0, 0.0), (0.0, 0.0));
 }
+
+#[test]
+fn read_since_returns_only_frames_written_after_the_cursor() {
+    let scope = StereoScope::new();
+    scope.push(&[1.0, 2.0], &[-1.0, -2.0]);
+    let mut out = [(0.0f32, 0.0f32); 8];
+    let (count, cursor) = scope.read_since(0, &mut out);
+    assert_eq!(count, 2);
+    assert_eq!(&out[..count], &[(1.0, -1.0), (2.0, -2.0)]);
+    assert_eq!(cursor, 2);
+
+    scope.push(&[3.0], &[-3.0]);
+    let (count, cursor) = scope.read_since(cursor, &mut out);
+    assert_eq!(count, 1);
+    assert_eq!(&out[..count], &[(3.0, -3.0)]);
+    assert_eq!(cursor, 3);
+}
+
+#[test]
+fn read_since_returns_nothing_when_no_frames_arrived() {
+    let scope = StereoScope::new();
+    scope.push(&[1.0, 2.0], &[3.0, 4.0]);
+    let mut out = [(0.0f32, 0.0f32); 8];
+    let (_, cursor) = scope.read_since(0, &mut out);
+    let (count, again) = scope.read_since(cursor, &mut out);
+    assert_eq!(count, 0);
+    assert_eq!(again, cursor);
+}
+
+#[test]
+fn read_since_drops_frames_the_reader_missed() {
+    let scope = StereoScope::new();
+    let left: Vec<f32> = (0..SCOPE_CAPACITY as i32 + 10).map(|i| i as f32).collect();
+    let right: Vec<f32> = left.iter().map(|v| -v).collect();
+    scope.push(&left, &right);
+    let mut out = [(0.0f32, 0.0f32); SCOPE_CAPACITY + 100];
+    let (count, cursor) = scope.read_since(0, &mut out);
+    assert_eq!(count, SCOPE_CAPACITY);
+    assert_eq!(cursor, (SCOPE_CAPACITY + 10) as u64);
+    // The oldest ten frames have been overwritten; the reader resumes at the oldest kept one.
+    assert_eq!(out[0], (10.0, -10.0));
+}
+
+#[test]
+fn read_since_after_clear_restarts_at_zero() {
+    let scope = StereoScope::new();
+    scope.push(&[1.0, 2.0, 3.0], &[0.0, 0.0, 0.0]);
+    let mut out = [(0.0f32, 0.0f32); 8];
+    let (_, cursor) = scope.read_since(0, &mut out);
+    scope.clear();
+    let (count, restarted) = scope.read_since(cursor, &mut out);
+    assert_eq!(count, 0);
+    assert_eq!(restarted, 0);
+    assert_eq!(scope.written(), 0);
+}
+
+#[test]
+fn clearing_bumps_the_epoch_so_readers_can_discard_old_points() {
+    let scope = StereoScope::new();
+    let before = scope.epoch();
+    scope.push(&[1.0], &[1.0]);
+    scope.clear();
+    assert!(scope.epoch() > before);
+    scope.push(&[2.0], &[2.0]);
+    assert_eq!(scope.written(), 1);
+    assert_eq!(scope.epoch(), before + 1);
+}
+
+#[test]
+fn read_since_resumes_after_a_small_buffer() {
+    let scope = StereoScope::new();
+    scope.push(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]);
+    let mut out = [(0.0f32, 0.0f32); 2];
+    let (count, cursor) = scope.read_since(0, &mut out);
+    assert_eq!(count, 2);
+    assert_eq!(cursor, 2);
+    let (count, cursor) = scope.read_since(cursor, &mut out);
+    assert_eq!(count, 1);
+    assert_eq!(out[0], (3.0, 3.0));
+    assert_eq!(cursor, 3);
+}

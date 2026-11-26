@@ -41,6 +41,8 @@ pub struct StereoScope {
     slots: [AtomicU64; SCOPE_CAPACITY],
     /// Number of frames written since the last clear; wraps only after 2^64 frames.
     written: AtomicU64,
+    /// Incremented by every clear, so a reader can discard points from before a source reset.
+    epoch: AtomicU64,
 }
 
 impl StereoScope {
@@ -49,6 +51,7 @@ impl StereoScope {
         Self {
             slots: std::array::from_fn(|_| AtomicU64::new(pack(0.0, 0.0))),
             written: AtomicU64::new(0),
+            epoch: AtomicU64::new(0),
         }
     }
 
@@ -56,6 +59,7 @@ impl StereoScope {
     /// other callers must first stop the producer.
     pub fn clear(&self) {
         self.written.store(0, Ordering::Relaxed);
+        self.epoch.fetch_add(1, Ordering::Release);
     }
 
     /// Appends one block of stereo frames (audio thread). Extra frames beyond the capacity
@@ -93,6 +97,43 @@ impl StereoScope {
         }
         count
     }
+
+    /// Number of frames written since the last [`clear`](Self::clear).
+    pub fn written(&self) -> u64 {
+        self.written.load(Ordering::Acquire)
+    }
+
+    /// Counter that changes on every [`clear`](Self::clear).
+    ///
+    /// Readers compare it with the value they saw last frame: a different value means the
+    /// captured points belong to an earlier source, even if the write counter has already
+    /// passed the old cursor.
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
+    }
+
+    /// Copies frames written after `cursor` and returns them with the new cursor.
+    ///
+    /// This is the incremental reader used by the Lissajous trail: each UI frame only
+    /// consumes frames it has not seen. When the reader falls more than [`SCOPE_CAPACITY`]
+    /// frames behind, the overwritten frames are skipped and the cursor resumes at the
+    /// oldest frame still in the ring. After a clear, a stale cursor simply returns no
+    /// frames; callers normally watch [`epoch`](Self::epoch) as well.
+    pub fn read_since(&self, cursor: u64, out: &mut [(f32, f32)]) -> (usize, u64) {
+        let written = self.written.load(Ordering::Acquire);
+        if cursor > written {
+            // The ring was cleared (or the counter wrapped) since the reader last looked.
+            return (0, written);
+        }
+        let oldest = written.saturating_sub(SCOPE_CAPACITY as u64);
+        let start = cursor.max(oldest);
+        let count = out.len().min((written - start) as usize);
+        for (k, slot) in out[..count].iter_mut().enumerate() {
+            let index = ((start + k as u64) % SCOPE_CAPACITY as u64) as usize;
+            *slot = unpack(self.slots[index].load(Ordering::Relaxed));
+        }
+        (count, start + count as u64)
+    }
 }
 
 impl Default for StereoScope {
@@ -106,6 +147,7 @@ impl std::fmt::Debug for StereoScope {
         f.debug_struct("StereoScope")
             .field("capacity", &SCOPE_CAPACITY)
             .field("written", &self.written.load(Ordering::Relaxed))
+            .field("epoch", &self.epoch.load(Ordering::Relaxed))
             .finish()
     }
 }

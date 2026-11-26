@@ -127,3 +127,164 @@ fn switching_to_mono_clears_the_previous_stereo_figure() {
     engine.process(&mut slices, false);
     assert!(figure(&shared).is_empty());
 }
+
+use shirabe_plugin::editor::ScopeView;
+use shirabe_ui::scope::TRAIL_SECONDS;
+
+#[test]
+fn a_paused_source_does_not_repeat_the_same_trace_into_the_trail() {
+    let (mut engine, shared) = engine(2);
+    run(&mut engine, 0.25, 8);
+    let mut view = ScopeView::new();
+    view.update(&shared, 2, 0.0, true, false);
+    assert!(!view.trail().is_empty());
+    let after_audio = view.trail().len();
+
+    // No new audio blocks arrive (the host is paused), so the same captured frames must not
+    // be appended again.
+    view.update(&shared, 2, 2.0 / 60.0, true, false);
+    assert_eq!(view.new_samples(), 0);
+    assert!(view.points().is_empty());
+    assert_eq!(view.trail().len(), after_audio);
+
+    // The retained points fade out with time and then disappear.
+    view.update(&shared, 2, TRAIL_SECONDS as f64 + 1.0, true, false);
+    assert!(view.trail().is_empty());
+    assert!(view.points().is_empty());
+}
+
+#[test]
+fn clearing_the_capture_resets_the_trail_and_the_auto_gain() {
+    let (mut engine, shared) = engine(2);
+    run(&mut engine, 0.0, 8);
+    let mut view = ScopeView::new();
+    view.update(&shared, 2, 0.0, true, true);
+    assert!(!view.trail().is_empty());
+
+    shared.scope.clear();
+    view.update(&shared, 2, 1.0 / 60.0, true, true);
+    assert!(view.trail().is_empty());
+    assert_eq!(view.gain_db(), 0.0);
+}
+
+#[test]
+fn switching_to_mono_clears_the_trail() {
+    let (mut engine, shared) = engine(2);
+    run(&mut engine, 0.0, 4);
+    let mut view = ScopeView::new();
+    view.update(&shared, 2, 0.0, true, false);
+    assert!(!view.trail().is_empty());
+
+    engine.prepare(RATE, 1);
+    view.update(&shared, 1, 1.0 / 60.0, true, false);
+    assert!(view.trail().is_empty());
+    assert!(view.mono());
+}
+
+#[test]
+fn fixed_scale_keeps_the_unity_gain_and_the_raw_peak() {
+    let (mut engine, shared) = engine(2);
+    run(&mut engine, 0.0, 8);
+    let mut view = ScopeView::new();
+    view.update(&shared, 2, 0.0, false, false);
+    assert_eq!(view.gain_db(), 0.0);
+    let peak = view
+        .points()
+        .iter()
+        .map(|(mid, _)| mid.abs())
+        .fold(0.0f32, f32::max);
+    assert!((peak - AMPLITUDE).abs() < 0.01, "{peak}");
+}
+
+#[test]
+fn automatic_gain_lifts_the_displayed_figure_without_touching_the_meter_readings() {
+    let (mut control, control_shared) = engine(2);
+    let (mut engine, shared) = engine(2);
+    run(&mut engine, 0.0, 8);
+    run(&mut control, 0.0, 8);
+    let mut view = ScopeView::new();
+    let mut now = 0.0;
+    view.update(&shared, 2, now, true, true);
+    for _ in 0..240 {
+        run(&mut engine, 0.0, 1);
+        run(&mut control, 0.0, 1);
+        now += 1.0 / 60.0;
+        view.update(&shared, 2, now, true, true);
+    }
+    assert!(view.gain_db() > 3.0, "{}", view.gain_db());
+    let peak = view
+        .points()
+        .iter()
+        .map(|(mid, _)| mid.abs())
+        .fold(0.0f32, f32::max);
+    assert!(peak > AMPLITUDE, "the display was not scaled: {peak}");
+
+    // The same audio through an engine with no scope view at all must measure identically.
+    for channel in 0..2 {
+        assert_eq!(
+            shared
+                .channel(channel)
+                .level_db
+                .load(std::sync::atomic::Ordering::Relaxed),
+            control_shared
+                .channel(channel)
+                .level_db
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
+    }
+    assert_eq!(
+        shared.loudness.momentary.load(),
+        control_shared.loudness.momentary.load()
+    );
+}
+
+#[test]
+fn automatic_gain_holds_the_scale_when_audio_stops() {
+    let (mut engine, shared) = engine(2);
+    let mut view = ScopeView::new();
+    let mut now = 0.0;
+    for _ in 0..120 {
+        run(&mut engine, 0.0, 1);
+        now += 1.0 / 60.0;
+        view.update(&shared, 2, now, true, true);
+    }
+    let applied = view.gain_db();
+    assert!(applied > 0.0, "{applied}");
+    // Paused: no new frames, so the gain must stay put and be shown as held.
+    now += 1.0;
+    view.update(&shared, 2, now, true, true);
+    assert_eq!(view.gain_db(), applied);
+    assert!(view.holding());
+}
+
+#[test]
+fn switching_back_to_the_fixed_scale_returns_unity_gain() {
+    let (mut engine, shared) = engine(2);
+    let mut view = ScopeView::new();
+    let mut now = 0.0;
+    for _ in 0..120 {
+        run(&mut engine, 0.0, 1);
+        now += 1.0 / 60.0;
+        view.update(&shared, 2, now, true, true);
+    }
+    assert!(view.gain_db() > 0.0);
+
+    now += 1.0 / 60.0;
+    view.update(&shared, 2, now, true, false);
+    assert_eq!(view.gain_db(), 0.0);
+    assert!(!view.holding());
+}
+
+#[test]
+fn turning_the_trail_off_stops_appending_history() {
+    let (mut engine, shared) = engine(2);
+    run(&mut engine, 0.25, 8);
+    let mut view = ScopeView::new();
+    view.update(&shared, 2, 0.0, true, false);
+    assert!(!view.trail().is_empty());
+
+    run(&mut engine, 0.25, 4);
+    view.update(&shared, 2, 1.0 / 60.0, false, false);
+    assert!(view.trail().is_empty());
+    assert!(!view.points().is_empty());
+}

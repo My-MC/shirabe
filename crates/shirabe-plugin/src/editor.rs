@@ -17,7 +17,9 @@ use shirabe_ui::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Painter, Rect, RichText, Sense,
     Stroke,
 };
-use shirabe_ui::scope::{draw as draw_scope, MAX_POINTS as SCOPE_POINTS};
+use shirabe_ui::scope::{
+    draw as draw_scope, AutoGain, ScopeRender, Trail, MAX_POINTS, TRAIL_CAPACITY, TRAIL_SECONDS,
+};
 use shirabe_ui::{
     draw_level_bar, draw_marker, draw_scale_labels, format_db, format_lufs, MeterScale, Theme, Zone,
 };
@@ -62,14 +64,17 @@ pub(crate) fn create(
     let egui_state = params.editor_state.clone();
     create_egui_editor(
         params.editor_state.clone(),
-        Theme::dark(),
-        |ctx, theme| {
+        EditorState {
+            theme: Theme::dark(),
+            scope: ScopeView::new(),
+        },
+        |ctx, state| {
             let mut visuals = egui::Visuals::dark();
-            visuals.panel_fill = theme.background;
-            visuals.window_fill = theme.background;
+            visuals.panel_fill = state.theme.background;
+            visuals.window_fill = state.theme.background;
             ctx.set_visuals(visuals);
         },
-        move |ctx, setter, theme| {
+        move |ctx, setter, state| {
             // Meters move continuously, so redraw every frame while the editor is open.
             ctx.request_repaint();
 
@@ -78,10 +83,18 @@ pub(crate) fn create(
                 .show(ctx, egui_state.as_ref(), |ui| {
                     egui::Frame::default()
                         .inner_margin(egui::Margin::same(8))
-                        .show(ui, |ui| draw(ui, &params, &shared, setter, theme));
+                        .show(ui, |ui| {
+                            draw(ui, &params, &shared, setter, &state.theme, &mut state.scope)
+                        });
                 });
         },
     )
+}
+
+/// State owned by one editor instance: the theme and the display-only Lissajous history.
+struct EditorState {
+    theme: Theme,
+    scope: ScopeView,
 }
 
 /// Draws the whole meter view (header, meters and settings). Used by the plugin editor and by
@@ -92,6 +105,7 @@ pub fn draw(
     shared: &SharedMeters,
     setter: &ParamSetter,
     theme: &Theme,
+    scope: &mut ScopeView,
 ) {
     header(ui, shared, theme);
     ui.separator();
@@ -102,7 +116,7 @@ pub fn draw(
         CONTROLS_HEIGHT
     };
     let height = (ui.available_height() - controls).max(120.0);
-    meters(ui, params, shared, theme, height);
+    meters(ui, params, shared, theme, height, scope);
 
     ui.separator();
     settings(ui, params, setter);
@@ -283,6 +297,7 @@ fn meters(
     shared: &SharedMeters,
     theme: &Theme,
     height: f32,
+    scope: &mut ScopeView,
 ) {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
@@ -292,6 +307,7 @@ fn meters(
     {
         shared.request_reset();
     }
+    let now = ui.input(|i| i.time);
     let painter = ui.painter_at(rect);
     let channels = shared
         .active_channels()
@@ -330,7 +346,7 @@ fn meters(
     let (panel_rect, scope_rect) = split_column(column_rect);
     loudness_panel(&painter, panel_rect, shared, theme, &view, channels);
     if let Some(scope_rect) = scope_rect {
-        scope_section(&painter, scope_rect, shared, theme, channels);
+        scope_section(&painter, scope_rect, shared, params, theme, scope, now);
     }
 }
 
@@ -355,20 +371,221 @@ fn scope_section(
     painter: &Painter,
     rect: Rect,
     shared: &SharedMeters,
+    params: &ShirabeParams,
     theme: &Theme,
-    channels: usize,
+    view: &mut ScopeView,
+    now: f64,
 ) {
-    let mono = channels < 2;
-    let mut points = [(0.0f32, 0.0f32); SCOPE_POINTS];
-    let count = if mono {
-        0
-    } else {
-        shared.scope.read_latest(&mut points)
+    let trail_on = params.scope_trail.value();
+    let auto = params.scope_auto_gain.value();
+    let channels = shared
+        .active_channels()
+        .clamp(1, crate::shared::MAX_CHANNELS);
+    view.update(shared, channels, now, trail_on, auto);
+    let render = ScopeRender {
+        points: view.points(),
+        trail: trail_on.then_some(view.trail()),
+        now,
+        trail_seconds: TRAIL_SECONDS,
+        auto,
+        gain_db: view.gain_db(),
+        holding: view.holding(),
+        mono: view.mono(),
     };
-    for point in &mut points[..count] {
-        *point = mid_side(point.0, point.1);
+    draw_scope(painter, rect, &render, theme);
+}
+
+/// Display-only state of the Lissajous view: the trail, the automatic gain and the read
+/// cursor into the capture ring.
+///
+/// The measured path never sees this state. Only frames the editor has not read before are
+/// appended to the trail, so a paused host does not stack copies of the same trace, and the
+/// epoch of the capture clears the history after a source reset or a switch to mono.
+pub struct ScopeView {
+    cursor: u64,
+    epoch: u64,
+    last_time: f64,
+    last_trail: Option<bool>,
+    last_auto: Option<bool>,
+    trail: Trail,
+    gain: AutoGain,
+    /// Raw L/R frames read from the capture ring.
+    raw: Vec<(f32, f32)>,
+    /// New mid/side points after the display gain, for this frame.
+    fresh: Vec<(f32, f32)>,
+    fresh_len: usize,
+    /// Newest mid/side points after the display gain, used when the trail is off.
+    latest: Vec<(f32, f32)>,
+    latest_len: usize,
+    new_samples: usize,
+    gain_db: f32,
+    holding: bool,
+    mono: bool,
+}
+
+impl ScopeView {
+    /// Creates an empty view.
+    pub fn new() -> Self {
+        Self {
+            cursor: 0,
+            epoch: 0,
+            last_time: f64::NAN,
+            last_trail: None,
+            last_auto: None,
+            trail: Trail::new(),
+            gain: AutoGain::new(),
+            raw: vec![(0.0, 0.0); TRAIL_CAPACITY],
+            fresh: vec![(0.0, 0.0); TRAIL_CAPACITY],
+            fresh_len: 0,
+            latest: vec![(0.0, 0.0); MAX_POINTS],
+            latest_len: 0,
+            new_samples: 0,
+            gain_db: 0.0,
+            holding: false,
+            mono: false,
+        }
     }
-    draw_scope(painter, rect, &points[..count], mono, theme);
+
+    /// Consumes the frames written since the previous update.
+    ///
+    /// `now` is the editor clock in seconds. `trail_on` and `auto` mirror the two display
+    /// settings; a change of either starts the history and the gain afresh.
+    pub fn update(
+        &mut self,
+        shared: &SharedMeters,
+        channels: usize,
+        now: f64,
+        trail_on: bool,
+        auto: bool,
+    ) {
+        if !now.is_finite() {
+            return;
+        }
+        let mut restart = false;
+        let dt = if !self.last_time.is_finite() {
+            self.last_time = now;
+            0.0
+        } else if now < self.last_time {
+            // The editor clock went backwards (a new editor context); old timestamps are
+            // meaningless, so drop the history.
+            restart = true;
+            self.last_time = now;
+            0.0
+        } else {
+            let dt = now - self.last_time;
+            self.last_time = now;
+            dt as f32
+        };
+
+        let epoch = shared.scope.epoch();
+        if epoch != self.epoch || self.last_trail != Some(trail_on) || self.last_auto != Some(auto)
+        {
+            restart = true;
+        }
+        if restart {
+            self.trail.clear();
+            self.gain.reset();
+            self.epoch = epoch;
+            self.last_trail = Some(trail_on);
+            self.last_auto = Some(auto);
+            // A reset restarts the capture counter at zero, so read from its beginning.
+            self.cursor = 0;
+        }
+
+        self.fresh_len = 0;
+        self.latest_len = 0;
+        self.new_samples = 0;
+        self.gain_db = if auto { self.gain.gain_db() } else { 0.0 };
+        self.holding = auto;
+
+        if channels < 2 {
+            self.mono = true;
+            self.trail.clear();
+            self.gain.reset();
+            self.gain_db = 0.0;
+            self.holding = auto;
+            self.cursor = shared.scope.written();
+            self.epoch = epoch;
+            return;
+        }
+        self.mono = false;
+
+        let (count, cursor) = shared.scope.read_since(self.cursor, &mut self.raw);
+        self.cursor = cursor;
+        self.new_samples = count;
+        for (index, &(left, right)) in self.raw[..count].iter().enumerate() {
+            self.fresh[index] = mid_side(left, right);
+        }
+        self.fresh_len = count;
+
+        // The automatic gain only moves when new audio arrives; a paused source holds the
+        // last scale instead of winding up on the frozen samples.
+        if auto && count > 0 {
+            let dt = if dt > 0.0 { dt } else { 1.0 / 60.0 };
+            self.gain.update(&self.fresh[..count], dt);
+        }
+        let factor = if auto { self.gain.factor() } else { 1.0 };
+        for point in &mut self.fresh[..count] {
+            point.0 *= factor;
+            point.1 *= factor;
+        }
+        self.gain_db = if auto { self.gain.gain_db() } else { 0.0 };
+        self.holding = auto && (self.gain.is_holding() || count == 0);
+
+        if trail_on {
+            for &(mid, side) in &self.fresh[..count] {
+                self.trail.push(mid, side, now);
+            }
+            self.trail.prune(now, TRAIL_SECONDS);
+        } else {
+            let count = shared.scope.read_latest(&mut self.raw[..MAX_POINTS]);
+            for (index, &(left, right)) in self.raw[..count].iter().enumerate() {
+                let (mid, side) = mid_side(left, right);
+                self.latest[index] = (mid * factor, side * factor);
+            }
+            self.latest_len = count;
+        }
+    }
+
+    /// Points to draw brightly: the new frames with the trail on, the newest window without.
+    pub fn points(&self) -> &[(f32, f32)] {
+        if self.last_trail == Some(true) {
+            &self.fresh[..self.fresh_len]
+        } else {
+            &self.latest[..self.latest_len]
+        }
+    }
+
+    /// The fading history (empty while the trail is off).
+    pub fn trail(&self) -> &Trail {
+        &self.trail
+    }
+
+    /// Number of frames consumed by the last update.
+    pub fn new_samples(&self) -> usize {
+        self.new_samples
+    }
+
+    /// Gain applied to the display in the last update, in dB.
+    pub fn gain_db(&self) -> f32 {
+        self.gain_db
+    }
+
+    /// Whether the automatic gain is holding its last value.
+    pub fn holding(&self) -> bool {
+        self.holding
+    }
+
+    /// Whether the last update saw a mono input.
+    pub fn mono(&self) -> bool {
+        self.mono
+    }
+}
+
+impl Default for ScopeView {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 fn caption(shared: &SharedMeters, index: usize) -> String {
@@ -995,6 +1212,30 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
             }
             ui.label("0 VU =");
             ui.add(widgets::ParamSlider::for_param(&params.vu_reference, setter).with_width(110.0));
+        }
+        ui.separator();
+        ui.label("Scope");
+        let mut trail = params.scope_trail.value();
+        if ui
+            .checkbox(&mut trail, "Trail")
+            .on_hover_text("Fade the recent Lissajous figures over about 0.3 seconds")
+            .changed()
+        {
+            setter.begin_set_parameter(&params.scope_trail);
+            setter.set_parameter(&params.scope_trail, trail);
+            setter.end_set_parameter(&params.scope_trail);
+        }
+        let mut auto = params.scope_auto_gain.value();
+        if ui
+            .checkbox(&mut auto, "Auto gain")
+            .on_hover_text(
+                "Fit the figure to the signal (up to +20 dB) instead of the fixed ±1 scale",
+            )
+            .changed()
+        {
+            setter.begin_set_parameter(&params.scope_auto_gain);
+            setter.set_parameter(&params.scope_auto_gain, auto);
+            setter.end_set_parameter(&params.scope_auto_gain);
         }
     });
 }

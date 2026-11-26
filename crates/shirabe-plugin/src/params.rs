@@ -214,6 +214,14 @@ pub struct ShirabeParams {
     /// Reset integrated loudness, loudness range and maxima when the host transport starts.
     #[id = "auto_rst"]
     pub auto_reset: BoolParam,
+
+    /// Draw a fading trail behind the Lissajous figure.
+    #[id = "scp_trail"]
+    pub scope_trail: BoolParam,
+
+    /// Fit the Lissajous figure to the signal instead of using the fixed ±1 scale.
+    #[id = "scp_auto"]
+    pub scope_auto_gain: BoolParam,
 }
 
 impl Default for ShirabeParams {
@@ -317,6 +325,10 @@ impl Default for ShirabeParams {
             loudness_unit: EnumParam::new("Loudness Unit", LoudnessUnit::Absolute),
 
             auto_reset: BoolParam::new("Reset on Play", true),
+
+            scope_trail: BoolParam::new("Lissajous Trail", true).non_automatable(),
+
+            scope_auto_gain: BoolParam::new("Lissajous Auto Gain", false).non_automatable(),
         }
     }
 }
