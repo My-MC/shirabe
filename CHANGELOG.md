@@ -8,6 +8,16 @@
 
 ### 追加
 
+- 署名なしの Windows インストーラーと Linux の tar.gz を追加しました。
+  Windows は Inno Setup 6 で作り、VST3 を `%CommonProgramFiles%\VST3`、CLAP を `%CommonProgramFiles%\CLAP`、スタンドアロンアプリを `%ProgramFiles%` に入れます。
+  スタートメニューにアプリとアンインストーラーの項目を追加し、`%APPDATA%\Shirabe` の設定はアンインストール後も残します。
+  Linux は `install.sh` と `uninstall.sh` を含む tar.gz で、`~/.vst3`、`~/.clap`、`~/.local/bin` とアプリケーションメニューに入れます（`--system` で `/usr/local` の下にも入れられます）。
+  macOS は署名なしの zip にまとめ、署名と公証は保留しました。
+  CI は毎回これらを作成し、Windows ではサイレントインストールと削除、Linux では一時 HOME と `--prefix` へのインストールと削除を確認します。
+  版は `Cargo.toml` の `[workspace.package] version` から取ります。
+  インストーラーの AppId は固定で、公開後は変更しません。
+  計測値、パラメーター ID、オーディオの経路は変わりません。
+
 - サイドチェーン入力によるリファレンス音源との比較を追加しました。
   メインとは別の 2 台目のラウドネス計測で、窓（400 ms / 3 s）とゲーティング（-70 LUFS、-10 LU）はメインと同じです。
   タイル `reference` とレイアウトプリセット Compare で、M / S / I の差分（メイン − リファレンス、LU）を符号付きで表示します。

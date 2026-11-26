@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Shirabe Meter Suite
+GenericName=Audio Meter
+Comment=Pass-through audio metering (standalone)
+Comment[ja]=パススルーのオーディオメーター（スタンドアロン）
+Exec=shirabe
+Icon=shirabe
+Terminal=false
+Categories=AudioVideo;Audio;
+StartupWMClass=shirabe
+Keywords=meter;loudness;true peak;VU;PPM;audio;

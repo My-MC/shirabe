@@ -74,15 +74,113 @@ cargo run -p shirabe-app --bin shirabe
 | ジョブ | 実行条件 | 内容 |
 |---|---|---|
 | `check` | push、pull request | `cargo fmt`、`cargo clippy`、`cargo test` |
-| `bundle (windows-x64)` | `check` の成功後 | VST3 / CLAP / スタンドアロンのビルド、pluginval による VST3 検証 |
-| `bundle (linux-x64)` | `check` の成功後 | VST3 / CLAP / スタンドアロンのビルド、pluginval による VST3 検証 |
-| `bundle (macos-arm64)` | `check` の成功後 | VST3 / CLAP / スタンドアロンのビルド |
+| `bundle (windows-x64)` | `check` の成功後 | VST3 / CLAP / スタンドアロンのビルド、pluginval による VST3 検証、インストーラーの作成とサイレントインストールの確認 |
+| `bundle (linux-x64)` | `check` の成功後 | VST3 / CLAP / スタンドアロンのビルド、pluginval による VST3 検証、tar.gz の作成と一時 HOME へのインストール確認 |
+| `bundle (macos-arm64)` | `check` の成功後 | VST3 / CLAP / スタンドアロンのビルド、zip の作成 |
 
 手動で CI を実行するには、次のコマンドを実行します。
 
 ```sh
 gh workflow run CI
 ```
+
+## 配布パッケージ
+
+CI は毎回、バンドルとは別に、署名なしの配布パッケージを作成します。
+リリースの公開は行わず、GitHub Actions の Artifacts にだけ残します。
+
+| Artifact | 内容 |
+|---|---|
+| `shirabe-installer-windows-x64` | `ShirabeMeterSuite-<版>-windows-x64-setup.exe` |
+| `shirabe-installer-linux-x64` | `ShirabeMeterSuite-<版>-linux-x64.tar.gz` |
+| `shirabe-installer-macos-arm64` | `ShirabeMeterSuite-<版>-macos-arm64.zip` |
+
+版は `Cargo.toml` の `[workspace.package] version` から取ります。
+どのパッケージにも README、CHANGELOG、`LICENSES/` を含めます。
+
+### Windows インストーラー
+
+Inno Setup 6 で作成し、管理者としてインストールします。
+
+| 内容 | 場所 |
+|---|---|
+| VST3 | `%CommonProgramFiles%\VST3\Shirabe Meter Suite.vst3` |
+| CLAP | `%CommonProgramFiles%\CLAP\Shirabe Meter Suite.clap` |
+| スタンドアロン | `%ProgramFiles%\Shirabe Meter Suite\shirabe.exe` |
+| スタートメニュー | `Shirabe Meter Suite` フォルダー（アプリとアンインストーラー） |
+| アンインストーラー | `%ProgramFiles%\Shirabe Meter Suite\unins000.exe` |
+| ライセンス | `%ProgramFiles%\Shirabe Meter Suite\licenses\` |
+
+アンインストールしても `%APPDATA%\Shirabe` の設定は残します。
+プラグインを読み込んでいるホストがあると置き換えに失敗するため、インストール前にホストを終了してください。
+
+Windows で作成するには、Inno Setup 6 を入れてから次を実行します。
+
+```powershell
+.\packaging\windows\build-installer.ps1
+```
+
+`ISCC.exe` が見つからないときは `-Iscc` で場所を指定します。
+スクリプトは、VST3、CLAP、`shirabe.exe` が Visual C++ ランタイムを要求しないことも確認します。
+
+インストーラーの AppId は `{FDE72B4E-A801-4085-89A8-50C9A6CF8B63}` です。
+AppId はアップグレードとアンインストールの登録に使う製品の同一性なので、公開後は変更しません。
+変更すると Windows は別の製品として扱い、古い登録とファイルが残ります。
+
+署名は行いません。
+そのため、初回の実行時に SmartScreen の警告が出ることがあります。
+「詳細情報」から実行を選ぶ必要があります。
+
+### Linux の tar.gz
+
+`packaging/linux/build-tarball.sh` が次の内容の tar.gz を作ります。
+
+| 内容 | 説明 |
+|---|---|
+| `Shirabe Meter Suite.vst3` | VST3 バンドル |
+| `Shirabe Meter Suite.clap` | CLAP |
+| `shirabe` | スタンドアロンアプリ |
+| `install.sh`、`uninstall.sh` | インストールと削除 |
+| `shirabe.desktop`、`shirabe.svg` | アプリケーションメニューの項目とアイコン |
+| `README.md`、`CHANGELOG.md`、`LICENSES/` | ドキュメントとライセンス |
+
+展開して `install.sh` を実行すると、現在のユーザー向けに `~/.vst3`、`~/.clap`、`~/.local/bin`、`${XDG_DATA_HOME:-~/.local/share}` へ入ります。
+
+```sh
+tar -xzf ShirabeMeterSuite-0.1.0-linux-x64.tar.gz
+cd ShirabeMeterSuite-0.1.0-linux-x64
+./install.sh
+```
+
+`sudo ./install.sh --system` は `/usr/local` の下（`lib/vst3`、`lib/clap`、`bin`、`share`）へ入れます。
+`--prefix` を付けると別の場所へ入れられ、書き込める場所なら root は不要です。
+削除は同じオプションを付けた `uninstall.sh` で行います。
+設定（`~/.config/shirabe`）と、同じディレクトリにある他のプラグインは消しません。
+
+作成は再現可能です。
+ファイルの時刻、所有者、順序と gzip のヘッダーを `SOURCE_DATE_EPOCH`（既定は最後のコミット時刻）に合わせるため、同じ入力と同じ値ならバイト単位で同じファイルになります。
+
+```sh
+packaging/linux/build-tarball.sh --dist dist/shirabe-linux-x64
+packaging/linux/smoke-test.sh dist/installers/*.tar.gz
+```
+
+`smoke-test.sh` は一時ディレクトリの HOME と `--prefix` にインストールし、ファイルを確認してから削除します。
+実際の `~/.vst3` などには触れません。
+
+### macOS
+
+macOS はインストーラーを作らず、3 つのバンドルを `ShirabeMeterSuite-<版>-macos-arm64.zip` にまとめます。
+署名と公証は行いません（保留）。
+そのため、初回は Gatekeeper が実行を止めることがあります。
+Finder で右クリックして「開く」を選ぶか、展開したディレクトリの隔離属性を外します。
+
+```sh
+xattr -dr com.apple.quarantine ShirabeMeterSuite-0.1.0-macos-arm64
+```
+
+ホストアプリケーションが署名のないプラグインを拒否する場合があります。
+macOS での動作はビルドの成功までしか確認していません（[testing.md](testing.md)）。
 
 ## 依存関係の固定
 

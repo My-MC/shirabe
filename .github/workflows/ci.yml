@@ -112,3 +112,61 @@ jobs:
           name: shirabe-${{ matrix.name }}
           path: dist/
           retention-days: 14
+
+      - name: Install Inno Setup (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+      - name: Build the Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packaging/windows/build-installer.ps1 -Dist "dist/shirabe-windows-x64"
+      - name: Test the Windows installer (silent install and uninstall)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist/installers/*.exe | Select-Object -First 1
+          ./packaging/windows/test-installer.ps1 -Installer $setup.FullName -Dist "dist/shirabe-windows-x64"
+      - name: Build the Linux tarball
+        if: runner.os == 'Linux'
+        run: ./packaging/linux/build-tarball.sh --dist dist/shirabe-linux-x64
+      - name: Test the Linux tarball in a temporary HOME
+        if: runner.os == 'Linux'
+        run: ./packaging/linux/smoke-test.sh dist/installers/*.tar.gz
+      - name: Package the macOS bundles as a zip
+        if: runner.os == 'macOS'
+        run: |
+          version=$(./packaging/version.sh)
+          stage="dist/installers/ShirabeMeterSuite-$version-macos-arm64"
+          mkdir -p "$stage"
+          cp -R "dist/shirabe-macos-arm64/." "$stage/"
+          ditto -c -k --keepParent "$stage" "$stage.zip"
+          rm -rf "$stage"
+      - name: Record installer checksums
+        shell: bash
+        run: |
+          cd dist/installers
+          summary=$GITHUB_STEP_SUMMARY
+          if command -v cygpath >/dev/null 2>&1; then
+            summary=$(cygpath -u "$summary")
+          fi
+          {
+            echo "### Installers (${{ matrix.name }})"
+            echo
+            echo '```'
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum ./*
+            else
+              shasum -a 256 ./*
+            fi
+            echo '```'
+          } | tee -a "$summary"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shirabe-installer-${{ matrix.name }}
+          path: dist/installers/
+          retention-days: 14

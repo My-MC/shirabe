@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Shirabe Meter Suite">
+  <rect x="0" y="0" width="256" height="256" rx="48" fill="#15171b"/>
+  <rect x="0" y="0" width="256" height="256" rx="48" fill="none" stroke="#2c3038" stroke-width="4"/>
+  <!-- scale ticks -->
+  <g stroke="#3d434d" stroke-width="3" stroke-linecap="round">
+    <line x1="36" y1="72" x2="52" y2="72"/>
+    <line x1="36" y1="112" x2="52" y2="112"/>
+    <line x1="36" y1="152" x2="52" y2="152"/>
+    <line x1="36" y1="192" x2="52" y2="192"/>
+  </g>
+  <!-- level bars -->
+  <g>
+    <rect x="66" y="96" width="30" height="96" rx="6" fill="#2a9d8f"/>
+    <rect x="66" y="72" width="30" height="20" rx="6" fill="#e9c46a"/>
+    <rect x="113" y="64" width="30" height="128" rx="6" fill="#2a9d8f"/>
+    <rect x="113" y="44" width="30" height="16" rx="6" fill="#e9c46a"/>
+    <rect x="160" y="112" width="30" height="80" rx="6" fill="#2a9d8f"/>
+  </g>
+  <!-- peak hold lines -->
+  <g stroke="#e76f51" stroke-width="4" stroke-linecap="round">
+    <line x1="66" y1="64" x2="96" y2="64"/>
+    <line x1="113" y1="36" x2="143" y2="36"/>
+  </g>
+  <line x1="48" y1="200" x2="208" y2="200" stroke="#5c6470" stroke-width="4" stroke-linecap="round"/>
+</svg>

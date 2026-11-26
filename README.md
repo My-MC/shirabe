@@ -45,14 +45,67 @@ GitHub Actions の各実行結果の Artifacts から、プラットフォーム
 | `shirabe-windows-x64` | `Shirabe Meter Suite.vst3`、`Shirabe Meter Suite.clap`、`shirabe.exe` |
 | `shirabe-linux-x64` | `Shirabe Meter Suite.vst3`、`Shirabe Meter Suite.clap`、`shirabe` |
 | `shirabe-macos-arm64` | `Shirabe Meter Suite.vst3`、`Shirabe Meter Suite.clap`、`shirabe`（署名なし） |
+| `shirabe-installer-windows-x64` | `ShirabeMeterSuite-<版>-windows-x64-setup.exe`（署名なしのインストーラー） |
+| `shirabe-installer-linux-x64` | `ShirabeMeterSuite-<版>-linux-x64.tar.gz`（`install.sh` つき） |
+| `shirabe-installer-macos-arm64` | `ShirabeMeterSuite-<版>-macos-arm64.zip`（署名なし） |
+
+版は `Cargo.toml` の `[workspace.package] version` です。
+配布物は署名していないため、Windows の SmartScreen と macOS の Gatekeeper では警告が出ることがあります。
 
 ## インストール（Windows）
 
-1. `Shirabe Meter Suite.vst3` フォルダーを `C:\Program Files\Common Files\VST3\` にコピーします。
-2. CLAP を使う場合は、`Shirabe Meter Suite.clap` を `C:\Program Files\Common Files\CLAP\` にコピーします。
-3. ホストアプリケーションでプラグインを再スキャンします。
+インストーラーを使うと、プラグインとスタンドアロンアプリがまとめて入ります。
 
+1. `shirabe-installer-windows-x64` の `ShirabeMeterSuite-<版>-windows-x64-setup.exe` を実行します（管理者として実行）。
+2. SmartScreen の警告が出た場合は、「詳細情報」から実行を選びます。
+3. ホストアプリケーションを再スキャンします。
+
+| 内容 | 場所 |
+|---|---|
+| VST3 | `%CommonProgramFiles%\VST3\Shirabe Meter Suite.vst3` |
+| CLAP | `%CommonProgramFiles%\CLAP\Shirabe Meter Suite.clap` |
+| スタンドアロン | `%ProgramFiles%\Shirabe Meter Suite\shirabe.exe` |
+| アンインストーラー | 「設定 > アプリ」または `%ProgramFiles%\Shirabe Meter Suite\unins000.exe` |
+
+アンインストールしても `%APPDATA%\Shirabe` の設定は残ります。
+
+インストーラーを使わない場合は、`Shirabe Meter Suite.vst3` フォルダーを `C:\Program Files\Common Files\VST3\` に、CLAP を使う場合は `Shirabe Meter Suite.clap` を `C:\Program Files\Common Files\CLAP\` にコピーします。
 スタンドアロンアプリは `shirabe.exe` をそのまま起動します。
+
+## インストール（Linux）
+
+`shirabe-installer-linux-x64` の tar.gz を展開し、`install.sh` を実行します。
+
+```sh
+tar -xzf ShirabeMeterSuite-<版>-linux-x64.tar.gz
+cd ShirabeMeterSuite-<版>-linux-x64
+./install.sh
+```
+
+現在のユーザー向けに、次の場所へ入ります。
+
+| 内容 | 場所 |
+|---|---|
+| VST3 | `~/.vst3/Shirabe Meter Suite.vst3` |
+| CLAP | `~/.clap/Shirabe Meter Suite.clap` |
+| スタンドアロン | `~/.local/bin/shirabe` |
+| アプリケーションメニュー | `${XDG_DATA_HOME:-~/.local/share}/applications/shirabe.desktop` |
+
+`sudo ./install.sh --system` は `/usr/local` の下へ入れます。
+削除は同じオプションを付けた `uninstall.sh` で行います。
+設定（`~/.config/shirabe`）は残ります。
+
+## インストール（macOS）
+
+`shirabe-installer-macos-arm64` の zip を展開し、`Shirabe Meter Suite.vst3` を `~/Library/Audio/Plug-Ins/VST3/` に、`Shirabe Meter Suite.clap` を `~/Library/Audio/Plug-Ins/CLAP/` にコピーします。
+スタンドアロンアプリは `shirabe` をそのまま起動します。
+
+署名と公証は行っていません。
+Gatekeeper が実行を止める場合は、Finder で右クリックして「開く」を選ぶか、展開したディレクトリの隔離属性を外します。
+
+```sh
+xattr -dr com.apple.quarantine ShirabeMeterSuite-<版>-macos-arm64
+```
 
 ## スタンドアロンアプリの使い方
 
@@ -120,6 +173,14 @@ VST is a registered trademark of Steinberg Media Technologies GmbH.
 Shirabe Meter Suite is a pass-through, zero-latency audio metering suite delivered as VST3 and CLAP plug-ins and a standalone application.
 
 It is in early development: sample peak, true peak, VU/PPM, loudness, a Lissajous stereo display, two meter layout presets and versioned appearance preset files for the standalone app are implemented.
+
+Every CI run also builds unsigned packages:
+
+- Windows x64: an Inno Setup installer that puts the VST3 bundle under `%CommonProgramFiles%\VST3`, the CLAP under `%CommonProgramFiles%\CLAP` and the standalone app in Program Files, with a Start menu shortcut and an uninstaller.
+- Linux x64: a reproducible tar.gz containing the bundles, the standalone app, `install.sh`/`uninstall.sh` and a desktop entry for `~/.vst3`, `~/.clap` and `~/.local/bin` (or a system prefix).
+- macOS arm64: a zip of the bundles. Signing and notarization are deferred.
+
+The packages are not code-signed: Windows SmartScreen and macOS Gatekeeper may warn. The package version comes from the Cargo workspace version. The installer AppId is fixed for the lifetime of the product and must never change.
 
 The DSP crate `shirabe-dsp` is MIT OR Apache-2.0; everything else is GPL-3.0-or-later.
 

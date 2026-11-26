@@ -703,3 +703,75 @@ DISPLAY=:99 XDG_CONFIG_HOME=/tmp/shirabe-export-test ./target/debug/shirabe &
 
 音声ファイルを入力にしたときのフルパスの扱いは、この確認では測っていません。
 単体テストで、既定では名前だけになり、指定したときだけフルパスが入ることを確認しています。
+
+## 配布パッケージの確認
+
+インストーラーと tar.gz は、CI で作成するたびに次の確認を行います。
+ローカルでは Linux の tar.gz だけを実際にインストールして確認できます。
+
+### Linux の tar.gz
+
+`smoke-test.sh` は一時ディレクトリの中だけで、現在のユーザー向けのインストールと `--prefix` を使ったシステム向けのインストールを順に行います。
+
+```sh
+packaging/linux/build-tarball.sh --dist dist/shirabe-linux-x64
+packaging/linux/smoke-test.sh dist/installers/*.tar.gz
+```
+
+確認する内容は次のとおりです。
+
+| 確認すること | 内容 |
+|---|---|
+| ユーザー向けの配置 | `~/.vst3`、`~/.clap`、`~/.local/bin`、`share/applications`、`share/icons`、`share/doc` にファイルが入る |
+| 実行属性 | `shirabe`、`install.sh`、`uninstall.sh`、`.clap`、`.so` に実行属性が付く |
+| デスクトップ項目 | `Exec=shirabe` で、メニューから起動できる |
+| 再実行 | `install.sh` をもう一度実行しても成功し、置き換わる |
+| 削除 | 製品のファイルだけが消え、同じディレクトリの他のプラグインと `~/.config/shirabe` は残る |
+| システム向け | `--system --prefix` で `lib/vst3`、`lib/clap`、`bin`、`share` に入り、`uninstall.sh` で消える |
+
+2026-11-26 に、この手順が `PASS: install and uninstall for the user and a system prefix` で終わることを確認しました。
+
+同じ入力から同じファイルができることも確認します。
+`SOURCE_DATE_EPOCH` を固定して 2 回作成し、SHA-256 を比べます。
+
+```sh
+packaging/linux/build-tarball.sh --dist dist/shirabe-linux-x64
+sha256sum dist/installers/*.tar.gz
+packaging/linux/build-tarball.sh --dist dist/shirabe-linux-x64
+sha256sum dist/installers/*.tar.gz
+```
+
+2026-11-26 の確認では、2 回とも同じ SHA-256 になりました（`0.1.0`、`SOURCE_DATE_EPOCH` はコミット時刻）。
+`tar -tzvf` で、所有者が `0/0`、ディレクトリが `755`、通常のファイルが `644`、実行するファイルが `755` になっていることも確認します。
+
+この確認は、インストールしたコピーをホストが読み込むところまでは見ていません。
+ホストでの読み込みは、ビルドしたバンドルに対する `tools/host-tests/run.sh` で確認します。
+
+### Windows のインストーラー
+
+CI の Windows ランナーで、作成したインストーラーをサイレントインストールし、確認してからサイレントアンインストールします。
+
+```powershell
+.\packaging\windows\test-installer.ps1 -Installer dist\installers\ShirabeMeterSuite-0.1.0-windows-x64-setup.exe
+```
+
+| 確認すること | 内容 |
+|---|---|
+| インストール | `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` が 0 で終わる |
+| 配置 | `%CommonProgramFiles%\VST3`、`%CommonProgramFiles%\CLAP`、`%ProgramFiles%` にファイルがある |
+| 内容 | インストールされた VST3、CLAP、`shirabe.exe` の SHA-256 が配布物と一致する |
+| ショートカット | スタートメニューにアプリとアンインストーラーの項目がある |
+| 登録 | 「アプリと機能」に `Shirabe Meter Suite` がある |
+| 削除 | アンインストーラーが 0 で終わり、ファイル、ショートカット、登録がすべて消える |
+
+このスクリプトは `%CommonProgramFiles%` と `%ProgramFiles%` を書き換えるため、使い捨てのランナーか確認用の仮想マシンでだけ実行します。
+既にインストールされている場合は、`-Force` を付けない限り開始しません。
+
+2026-11-26 の時点で、Windows の仮想マシンには接続できなかったため、実機でのインストールは確認していません。
+CI の Windows ランナーでの結果を確認する必要があります。
+
+### macOS
+
+zip はバンドルをまとめるだけで、インストーラーを含みません。
+CI では作成と展開の確認だけを行い、署名と公証は行いません。
+Gatekeeper とホストでの読み込みは、署名を導入するまで未確認です。
