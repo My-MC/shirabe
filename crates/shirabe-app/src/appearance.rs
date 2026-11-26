@@ -10,8 +10,9 @@
 
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use nih_plug::prelude::{Enum, ParamSetter};
 use serde::{Deserialize, Serialize};
@@ -222,31 +223,87 @@ struct RawFile {
 
 /// Writes `appearance` to `path`.
 ///
-/// With `overwrite` false an existing file is never replaced and
-/// [`Error::Exists`] is returned. The file is serialized before it is touched,
-/// so a failure cannot leave a half-written preset.
+/// A new export uses exclusive creation, reporting [`Error::Exists`] on a name
+/// collision. A write failure may leave a partial *new* file. A confirmed
+/// replacement writes a sibling temporary file, then asks the filesystem to
+/// rename it over the existing regular file; it never truncates the old file.
 pub fn save(appearance: &Appearance, path: &Path, overwrite: bool) -> Result<(), Error> {
-    if !overwrite && path.exists() {
-        return Err(Error::Exists);
-    }
     let file = RawFile {
         format: FORMAT.to_owned(),
         version: VERSION,
         layout: layout_id(appearance.layout).to_owned(),
         theme: ThemeSpec::from_theme(&appearance.theme),
     };
-    // Serialize first: an invalid theme cannot truncate an existing preset.
     let json = serde_json::to_vec_pretty(&file).map_err(Error::Json)?;
-    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
-        fs::create_dir_all(dir)?;
+    let dir = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(dir)?;
+
+    if overwrite {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                require_regular_file(&metadata)?;
+                return replace_file(dir, path, &json);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
     }
-    fs::write(path, json)?;
+
+    let mut file = match File::create_new(path) {
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Err(Error::Exists),
+        result => result?,
+    };
+    file.write_all(&json)?;
+    Ok(())
+}
+
+fn replace_file(dir: &Path, path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let (temp, mut file) = loop {
+        let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let temp = dir.join(format!(
+            ".shirabe-appearance-{}-{serial}.tmp",
+            std::process::id()
+        ));
+        match File::create_new(&temp) {
+            Ok(file) => break (temp, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    };
+
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    // Rename the directory entry, not its referent. If replacement isn't
+    // supported (e.g. a Windows sharing violation), don't fall back to truncation.
+    if let Err(error) = written.and_then(|()| fs::rename(&temp, path)) {
+        let _ = fs::remove_file(&temp);
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+fn require_regular_file(metadata: &fs::Metadata) -> io::Result<()> {
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "appearance path must be a regular file",
+        ));
+    }
     Ok(())
 }
 
 /// Reads and validates an appearance file.
 pub fn load(path: &Path) -> Result<Appearance, Error> {
-    let mut reader = File::open(path)?.take(MAX_BYTES + 1);
+    // Check before opening so a FIFO already at this path cannot block the UI.
+    // This is not a guarantee against concurrent changes to the path.
+    require_regular_file(&fs::symlink_metadata(path)?)?;
+    let file = File::open(path)?;
+    require_regular_file(&file.metadata()?)?;
+    let mut reader = file.take(MAX_BYTES + 1);
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_BYTES {
@@ -369,12 +426,36 @@ mod tests {
 
     use crate::context::{load_params, save_params, StandaloneContext};
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("shirabe-appearance-{}-{tag}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    struct TestDir(PathBuf);
+
+    impl std::ops::Deref for TestDir {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp_dir(tag: &str) -> TestDir {
+        let base = std::env::temp_dir();
+        for serial in 0.. {
+            let dir = base.join(format!(
+                "shirabe-appearance-{}-{tag}-{serial}",
+                std::process::id()
+            ));
+            match fs::create_dir(&dir) {
+                Ok(()) => return TestDir(dir),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("cannot create test directory: {error}"),
+            }
+        }
+        unreachable!("ran out of test directory names");
     }
 
     fn write_file(dir: &Path, name: &str, text: &str) -> PathBuf {
@@ -572,6 +653,72 @@ mod tests {
 
         save(&stereo_appearance(), &path, true).unwrap();
         assert_eq!(load(&path).unwrap(), stereo_appearance());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unconfirmed_export_does_not_follow_a_dangling_symlink() {
+        let dir = temp_dir("dangling-link");
+        let target = dir.join("missing.json");
+        let link = dir.join("appearance.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let result = save(&stereo_appearance(), &link, false);
+        assert!(matches!(result, Err(Error::Exists)), "{result:?}");
+        assert!(!target.exists());
+        assert_eq!(fs::read_link(&link).unwrap(), target);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confirmed_export_does_not_modify_a_symlinks_target() {
+        let dir = temp_dir("confirmed-link");
+        let target = write_file(&dir, "original.json", "keep me");
+        let link = dir.join("appearance.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let result = save(&stereo_appearance(), &link, true);
+        assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
+        assert_eq!(fs::read_link(&link).unwrap(), target);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep me");
+    }
+
+    #[test]
+    fn confirmed_export_replaces_the_file_without_modifying_its_other_hard_link() {
+        let dir = temp_dir("confirmed-hard-link");
+        let path = write_file(&dir, "appearance.json", "keep me");
+        let alias = dir.join("original.json");
+        fs::hard_link(&path, &alias).unwrap();
+
+        save(&stereo_appearance(), &path, true).unwrap();
+        assert_eq!(load(&path).unwrap(), stereo_appearance());
+        assert_eq!(fs::read_to_string(&alias).unwrap(), "keep me");
+    }
+
+    #[test]
+    fn a_failed_replacement_removes_its_temporary_file() {
+        let dir = temp_dir("failed-replace");
+        let destination = dir.join("directory.json");
+        fs::create_dir(&destination).unwrap();
+        let unrelated = write_file(&dir, ".shirabe-appearance-unrelated.tmp", "keep me");
+
+        // A directory cannot be replaced by a regular file. Exercise the rename
+        // error path directly; save would normally reject this destination earlier.
+        assert!(replace_file(&dir, &destination, b"new data").is_err());
+
+        assert!(destination.is_dir());
+        assert_eq!(fs::read_to_string(unrelated).unwrap(), "keep me");
+        assert_eq!(fs::read_dir(&*dir).unwrap().count(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_rejects_a_character_device() {
+        let result = load(Path::new("/dev/null"));
+        assert!(
+            matches!(result, Err(Error::Io(ref e)) if e.kind() == io::ErrorKind::InvalidInput),
+            "{result:?}"
+        );
     }
 
     #[test]
