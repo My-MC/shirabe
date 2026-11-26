@@ -6,6 +6,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use shirabe_dsp::stereo::StereoStatistics;
 use shirabe_dsp::{
     db_to_gain, ChannelLayout, LoudnessMeter, PeakBallistics, PeakMeter, PpmMeter, PpmType,
     SineOscillator, TruePeakMeter, VuMeter, MINUS_INFINITY_DB,
@@ -28,6 +29,9 @@ pub struct MeterEngine {
     ppm_type_ii: Vec<PpmMeter>,
     level_mode: LevelMode,
     loudness: LoudnessMeter,
+    /// Correlation and balance of the stereo input; fed only while both channels are present.
+    stereo: StereoStatistics,
+    stereo_active: bool,
     osc: SineOscillator,
     osc_was_enabled: bool,
     was_playing: bool,
@@ -55,6 +59,8 @@ impl MeterEngine {
                 .collect(),
             level_mode: LevelMode::Vu,
             loudness: LoudnessMeter::new(sr, ChannelLayout::Stereo.roles()),
+            stereo: StereoStatistics::new(sr),
+            stereo_active: false,
             osc: SineOscillator::new(1000.0, sr),
             osc_was_enabled: false,
             was_playing: false,
@@ -90,6 +96,8 @@ impl MeterEngine {
         }
         let layout = ChannelLayout::from_channel_count(channels).unwrap_or(ChannelLayout::Stereo);
         self.loudness.prepare(sample_rate, layout.roles());
+        self.stereo.prepare(sample_rate);
+        self.stereo_active = false;
         self.programme_peak = MINUS_INFINITY_DB;
         self.osc.reset();
         self.shared.configure(channels, sample_rate);
@@ -110,6 +118,8 @@ impl MeterEngine {
             meter.reset();
         }
         self.loudness.reset();
+        self.stereo.reset();
+        self.stereo_active = false;
         self.programme_peak = MINUS_INFINITY_DB;
         self.osc.reset();
         self.shared.clear();
@@ -157,14 +167,21 @@ impl MeterEngine {
         }
         self.osc_was_enabled = osc_enabled;
 
-        // Feed the Lissajous view with the stereo signal as processed (test oscillator
-        // included). Mono inputs publish nothing: a duplicated channel would look like a
-        // perfectly correlated stereo signal.
+        // Feed the Lissajous view and the stereo statistics with the stereo signal as processed
+        // (test oscillator included). Mono inputs publish nothing: a duplicated channel would
+        // look like a perfectly correlated stereo signal.
         if channels.len() >= 2 {
             let left: &[f32] = channels[0];
             let right: &[f32] = channels[1];
             self.shared.scope.push(left, right);
+            self.stereo.process(left, right);
+            self.stereo_active = true;
+        } else if self.stereo_active {
+            // Back to mono: drop the window so a stale stereo reading does not linger.
+            self.stereo.reset();
+            self.stereo_active = false;
         }
+        self.shared.stereo.store(&self.stereo.readout());
 
         let vu_reference = self.params.vu_reference.value();
         let level_mode = self.params.level_mode.value();
