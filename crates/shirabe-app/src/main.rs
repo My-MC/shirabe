@@ -44,7 +44,10 @@ impl App {
         let mut visuals = egui::Visuals::dark();
         visuals.panel_fill = theme.background;
         visuals.window_fill = theme.background;
-        cc.egui_ctx.set_visuals(visuals);
+        // eframe follows the system theme by default (light on many Windows setups); the
+        // meters are designed for the dark theme only.
+        cc.egui_ctx.set_theme(egui::Theme::Dark);
+        cc.egui_ctx.set_visuals_of(egui::Theme::Dark, visuals);
 
         let params = Arc::new(ShirabeParams::default());
         let settings = Settings::load();

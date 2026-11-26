@@ -39,7 +39,7 @@ Windows 11 での確認結果（2026-11-25）は次のとおりです。
 | pluginval（GUI テストを含む、ソフトウェア OpenGL 使用時） | 成功 |
 | スタンドアロン（ダミーバックエンド、テストオシレーター） | 成功 |
 | GPU のない環境でのエディター表示 | 失敗（[#1](https://github.com/My-MC/shirabe/issues/1)）→ フォークで修正済み |
-| スタンドアロンの WASAPI 出力 | 失敗（[#2](https://github.com/My-MC/shirabe/issues/2)） |
+| スタンドアロンの WASAPI 出力 | 失敗（[#2](https://github.com/My-MC/shirabe/issues/2)）→ 自前のアプリに置き換えて解消。2026-11-26 に WASAPI での起動とテストオシレーターでの測定を確認 |
 
 ## フェーズ 1：規格準拠の基本メーター
 
