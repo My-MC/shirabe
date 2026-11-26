@@ -219,7 +219,7 @@ pub struct ShirabeParams {
 impl Default for ShirabeParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(820, 500),
+            editor_state: EguiState::from_size(900, 560),
 
             osc_enabled: BoolParam::new("Test Oscillator", false),
 

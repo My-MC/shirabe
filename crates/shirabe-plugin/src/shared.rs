@@ -6,6 +6,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use nih_plug::prelude::AtomicF32;
+use shirabe_dsp::scope::StereoScope;
 use shirabe_dsp::{ChannelLayout, LoudnessReadout, PeakMeter, MINUS_INFINITY_DB};
 
 /// Maximum number of channels the meters are pre-allocated for.
@@ -128,6 +129,9 @@ pub struct SharedMeters {
     channels: [ChannelReadout; MAX_CHANNELS],
     /// Programme loudness of all channels.
     pub loudness: LoudnessShared,
+    /// Recent stereo frames for the Lissajous view (audio thread writes, editor reads).
+    /// Empty while the input is mono.
+    pub scope: StereoScope,
     active_channels: AtomicUsize,
     sample_rate: AtomicF32,
     reset_requested: AtomicBool,
@@ -145,6 +149,7 @@ impl SharedMeters {
         Self {
             channels: std::array::from_fn(|_| ChannelReadout::new()),
             loudness: LoudnessShared::new(),
+            scope: StereoScope::new(),
             active_channels: AtomicUsize::new(2),
             sample_rate: AtomicF32::new(0.0),
             reset_requested: AtomicBool::new(false),
@@ -169,6 +174,7 @@ impl SharedMeters {
         }
         self.loudness.store(&LoudnessReadout::default());
         self.loudness.plr.store(None);
+        self.scope.clear();
     }
 
     /// Read-outs of channel `index` (must be below [`MAX_CHANNELS`]).

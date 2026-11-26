@@ -18,6 +18,7 @@ pub mod osc;
 pub mod oversample;
 pub mod peak;
 pub mod ppm;
+pub mod scope;
 pub mod true_peak;
 pub mod vu;
 

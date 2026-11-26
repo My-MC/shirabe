@@ -157,6 +157,15 @@ impl MeterEngine {
         }
         self.osc_was_enabled = osc_enabled;
 
+        // Feed the Lissajous view with the stereo signal as processed (test oscillator
+        // included). Mono inputs publish nothing: a duplicated channel would look like a
+        // perfectly correlated stereo signal.
+        if channels.len() >= 2 {
+            let left: &[f32] = channels[0];
+            let right: &[f32] = channels[1];
+            self.shared.scope.push(left, right);
+        }
+
         let vu_reference = self.params.vu_reference.value();
         let level_mode = self.params.level_mode.value();
         if level_mode != self.level_mode {

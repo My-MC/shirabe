@@ -1,19 +1,23 @@
 //! The plugin editor (also used by the standalone application).
 //!
-//! Layout: a header, then three meter sections side by side (sample / true peak, VU or PPM,
-//! loudness), a numeric loudness panel, and the settings and test oscillator at the bottom.
-//! Scales and read-outs follow the documents listed in `docs/standards.md`.
+//! Layout: a header, then three bar sections side by side (sample / true peak, VU or PPM,
+//! loudness) with a right-hand column holding the numeric loudness panel above the Lissajous
+//! view, and the settings and test oscillator at the bottom.
+//! Scales and read-outs follow the documents listed in `docs/standards.md`; the Lissajous
+//! view is described in `docs/design.md`.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use nih_plug::prelude::*;
 use nih_plug_egui::{create_egui_editor, resizable_window::ResizableWindow, widgets};
+use shirabe_dsp::scope::mid_side;
 use shirabe_dsp::MINUS_INFINITY_DB;
 use shirabe_ui::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Painter, Rect, RichText, Sense,
     Stroke,
 };
+use shirabe_ui::scope::{draw as draw_scope, MAX_POINTS as SCOPE_POINTS};
 use shirabe_ui::{
     draw_level_bar, draw_marker, draw_scale_labels, format_db, format_lufs, MeterScale, Theme, Zone,
 };
@@ -33,7 +37,16 @@ const CONTROLS_HEIGHT: f32 = 92.0;
 /// Extra height of the custom-target row.
 const CUSTOM_ROW_HEIGHT: f32 = 24.0;
 const SECTION_GAP: f32 = 14.0;
-const LOUDNESS_PANEL_WIDTH: f32 = 160.0;
+/// Width of the right-hand column holding the loudness panel and the Lissajous view.
+const COLUMN_WIDTH: f32 = 180.0;
+/// Gap between the loudness panel and the Lissajous view.
+const COLUMN_GAP: f32 = 10.0;
+/// Smallest readable height of the Lissajous square.
+const MIN_SCOPE_HEIGHT: f32 = 96.0;
+/// The Lissajous view stops growing here so a tall window leaves the panel room.
+const MAX_SCOPE_HEIGHT: f32 = 200.0;
+/// The loudness panel needs about this much height to show its main values.
+const MIN_PANEL_HEIGHT: f32 = 190.0;
 
 /// Alignment level in dBFS (EBU R 68): TEST on the EBU and IEEE scales, mark 4 on the BBC scale.
 const ALIGNMENT_DBFS: f32 = -18.0;
@@ -61,7 +74,7 @@ pub(crate) fn create(
             ctx.request_repaint();
 
             ResizableWindow::new("shirabe-main")
-                .min_size(vec2(640.0, 380.0))
+                .min_size(vec2(720.0, 420.0))
                 .show(ctx, egui_state.as_ref(), |ui| {
                     egui::Frame::default()
                         .inner_margin(egui::Margin::same(8))
@@ -285,8 +298,9 @@ fn meters(
         .clamp(1, crate::shared::MAX_CHANNELS);
     let target = params.target_spec();
 
-    // The numeric loudness panel has a fixed width; the bar sections share the rest.
-    let meters_width = (rect.width() - LOUDNESS_PANEL_WIDTH - 3.0 * SECTION_GAP).max(0.0);
+    // The right-hand column holds the numeric loudness panel above the Lissajous view; the
+    // bar sections share the remaining width.
+    let meters_width = (rect.width() - COLUMN_WIDTH - 3.0 * SECTION_GAP).max(0.0);
     let peak_width = meters_width * 0.38;
     let level_width = meters_width * 0.37;
     let lufs_width = meters_width - peak_width - level_width;
@@ -300,7 +314,7 @@ fn meters(
     let peak_rect = take(peak_width);
     let level_rect = take(level_width);
     let lufs_rect = take(lufs_width);
-    let panel_rect = take(LOUDNESS_PANEL_WIDTH);
+    let column_rect = take(COLUMN_WIDTH);
 
     peak_section(&painter, peak_rect, shared, theme, channels, target);
     level_section(
@@ -313,7 +327,46 @@ fn meters(
     );
     let view = LoudnessView::new(params);
     loudness_section(&painter, lufs_rect, shared, theme, &view);
+    let (panel_rect, scope_rect) = split_column(column_rect);
     loudness_panel(&painter, panel_rect, shared, theme, &view, channels);
+    if let Some(scope_rect) = scope_rect {
+        scope_section(&painter, scope_rect, shared, theme, channels);
+    }
+}
+
+/// Splits the right-hand column into the loudness panel (top) and the Lissajous view
+/// (bottom). A column too short for both shows only the panel.
+fn split_column(rect: Rect) -> (Rect, Option<Rect>) {
+    let height = rect.height();
+    if height < MIN_PANEL_HEIGHT + MIN_SCOPE_HEIGHT + COLUMN_GAP {
+        return (rect, None);
+    }
+    let scope_height = (height * 0.38).clamp(MIN_SCOPE_HEIGHT, MAX_SCOPE_HEIGHT);
+    let scope_top = rect.bottom() - scope_height;
+    let panel = Rect::from_min_max(rect.min, pos2(rect.right(), scope_top - COLUMN_GAP));
+    let scope = Rect::from_min_max(pos2(rect.left(), scope_top), rect.max);
+    (panel, Some(scope))
+}
+
+/// Draws the Lissajous view from the captured stereo frames.
+fn scope_section(
+    painter: &Painter,
+    rect: Rect,
+    shared: &SharedMeters,
+    theme: &Theme,
+    channels: usize,
+) {
+    let mono = channels < 2;
+    let mut points = [(0.0f32, 0.0f32); SCOPE_POINTS];
+    let count = if mono {
+        0
+    } else {
+        shared.scope.read_latest(&mut points)
+    };
+    for point in &mut points[..count] {
+        *point = mid_side(point.0, point.1);
+    }
+    draw_scope(painter, rect, &points[..count], mono, theme);
 }
 
 fn caption(shared: &SharedMeters, index: usize) -> String {
@@ -1023,5 +1076,26 @@ mod tests {
         ] {
             assert!((bbc_mark(db) - mark).abs() < 1e-6, "{db}");
         }
+    }
+
+    fn column(height: f32) -> Rect {
+        Rect::from_min_max(pos2(0.0, 0.0), pos2(COLUMN_WIDTH, height))
+    }
+
+    #[test]
+    fn the_scope_sits_below_the_loudness_panel() {
+        let (panel, scope) = split_column(column(400.0));
+        let scope = scope.expect("a 400 px column shows the scope");
+        assert_eq!(panel.height(), 238.0);
+        assert_eq!(scope.top(), 248.0);
+        assert_eq!(scope.bottom(), 400.0);
+        assert_eq!(scope.width(), COLUMN_WIDTH);
+    }
+
+    #[test]
+    fn a_short_column_keeps_the_loudness_panel_only() {
+        let (panel, scope) = split_column(column(240.0));
+        assert!(scope.is_none());
+        assert_eq!(panel, column(240.0));
     }
 }

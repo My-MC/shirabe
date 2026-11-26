@@ -5,6 +5,7 @@
 
 pub mod bar;
 pub mod scale;
+pub mod scope;
 pub mod theme;
 pub mod vu_dial;
 

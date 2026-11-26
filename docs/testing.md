@@ -29,6 +29,7 @@ Linux 上のプラグインホストを使って、プラグインの読み込�
 | PPM Type I | 5 kHz トーンバースト応答（10 / 5 / 3 ms）と降下時間 | バーストは ±0.5〜1 dB、降下時間は ±0.1 s |
 | PPM Type II | EBU Tech 3205 表 2 のバースト応答（100 / 10 / 5 / 1.5 / 0.5 ms）、降下時間、行き過ぎ | Tech 3205 の許容範囲 |
 | PPM Type II（IEEE Std 152-1991 §1.3） | 周波数特性、積分時間、遅れ時間、過負荷特性、パルス応答、反転誤差 | IEEE 152 の許容範囲 |
+| リサージュ | 同相・逆相・90° のステレオ信号、リングバッファの順序と上限、モノラル入力と切り替え | 同相は側成分 0、逆相は中点 0、90° は半径 1/√2（±0.001） |
 
 各値の出典は [standards.md](standards.md) にまとめています。
 
@@ -118,6 +119,29 @@ Pause 中は PLR が保持され、Reset 後は Integrated が求まるまで `-
 Level で VU を選び、「Needle」をオンにするとチャンネルごとに針が表示されます。
 0 VU の基準とテストオシレーターをともに -18 dBFS に設定すると、針が 0 VU を指します。
 「Needle」をオフにすると、計測を続けたままバー表示に戻ります。
+
+## リサージュの確認
+
+テストオシレーターは同じ信号を L/R に出すため、リサージュは縦の直線になります。
+位相の違いを見るときは、次のコマンドで WAV ファイルを作り、スタンドアロンアプリの「Source」で `Audio file` を選んで再生します。
+
+```sh
+ffmpeg -f lavfi -i "aevalsrc=0.5*sin(2*PI*1000*t)|0.5*sin(2*PI*1000*t):s=48000:d=5" -c:a pcm_f32le /tmp/scope-in-phase.wav
+ffmpeg -f lavfi -i "aevalsrc=0.5*sin(2*PI*1000*t)|-0.5*sin(2*PI*1000*t):s=48000:d=5" -c:a pcm_f32le /tmp/scope-anti-phase.wav
+ffmpeg -f lavfi -i "aevalsrc=0.5*sin(2*PI*1000*t)|0.5*cos(2*PI*1000*t):s=48000:d=5" -c:a pcm_f32le /tmp/scope-quadrature.wav
+ffmpeg -f lavfi -i "aevalsrc=1.5*sin(2*PI*1000*t)|1.5*sin(2*PI*1000*t):s=48000:d=5" -c:a pcm_f32le /tmp/scope-clip.wav
+```
+
+期待される表示は次のとおりです。
+
+| ファイル | 表示 |
+|---|---|
+| `scope-in-phase.wav` | 中央を通る縦の直線。振幅 0.5 なので、上下それぞれ枠の半分まで届きます |
+| `scope-anti-phase.wav` | 中央を通る横の直線。左右それぞれ枠の半分まで届きます |
+| `scope-quadrature.wav` | 半径が枠の 35.4 % の円 |
+| `scope-clip.wav` | 縦の直線が枠の上下端で止まり、タイトルの右に `CLIP` が表示されます |
+
+モノラルの WAV を再生すると、図の代わりに `MONO` と `no stereo content` が表示されます。
 
 ## GPU のない環境での動作
 
