@@ -138,3 +138,157 @@ fn reset_returns_to_rest() {
     ppm.reset();
     assert!(ppm.level_db() < -100.0);
 }
+
+// --- IEEE Std 152-1991 §1.3 (identical dynamics to EBU Tech 3205, normal mode) ------------------
+
+/// Readings (dBFS) every 1 ms of a steady sine, after `settle` seconds.
+fn steady_readings(
+    kind: PpmType,
+    sr: f32,
+    freq: f64,
+    amp: f64,
+    settle: f64,
+    total: f64,
+) -> Vec<f32> {
+    let mut ppm = PpmMeter::new(sr, kind);
+    let block = (sr / 1000.0) as usize;
+    let n = (total * sr as f64) as usize;
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let x: Vec<f32> = (i..i + block)
+            .map(|k| (amp * (TAU * freq * k as f64 / sr as f64).sin()) as f32)
+            .collect();
+        ppm.process(&x);
+        i += block;
+        if i as f64 / sr as f64 >= settle {
+            out.push(ppm.level_db());
+        }
+    }
+    out
+}
+
+/// §1.3.1: within 25 Hz to 16 kHz the indication at test level deviates by less than 0.2 dB.
+#[test]
+fn ieee152_frequency_response() {
+    let amp = 10f64.powf(-18.0 / 20.0);
+    for sr in [44_100.0f32, 48_000.0, 96_000.0] {
+        for freq in [
+            25.0, 31.5, 63.0, 125.0, 1000.0, 5000.0, 10_000.0, 12_000.0, 12_500.0, 16_000.0,
+        ] {
+            let r = steady_readings(PpmType::TypeII, sr, freq, amp, 1.0, 1.5);
+            let (lo, hi) = r
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+            println!("sr={sr} f={freq}: {:.3} .. {:.3} dB", lo + 18.0, hi + 18.0);
+            assert!(
+                (lo + 18.0).abs() < 0.2 && (hi + 18.0).abs() < 0.2,
+                "sr={sr} f={freq}: indication {lo:.3}..{hi:.3} dBFS"
+            );
+        }
+    }
+}
+
+/// §1.3.10: integration time 10 ± 2 ms (burst duration that reads 2 dB below steady).
+#[test]
+fn ieee152_integration_time() {
+    let mut lo = 1.0;
+    let mut hi = 40.0;
+    for _ in 0..30 {
+        let mid = 0.5 * (lo + hi);
+        if burst_reading(PpmType::TypeII, mid, SR) < -2.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    assert!((8.0..=12.0).contains(&lo), "integration time {lo:.2} ms");
+}
+
+/// §1.3.4: delay time below 150 ms (1 kHz at +9 dB re test reaches +8).
+#[test]
+fn ieee152_delay_time() {
+    let test = 10f64.powf(-18.0 / 20.0);
+    let amp = test * 10f64.powf(9.0 / 20.0);
+    let r = steady_readings(PpmType::TypeII, SR, 1000.0, amp, 0.0, 0.3);
+    let t = r
+        .iter()
+        .position(|&v| v >= -18.0 + 8.0)
+        .expect("never reached +8") as f64
+        + 1.0;
+    assert!(t < 150.0, "delay {t} ms");
+}
+
+/// §1.3.11: a 1.5 ms burst at +9 increased by 10 dB raises the indication by 5 to 10 dB.
+#[test]
+fn ieee152_overload_characteristic() {
+    let read = |gain_db: f64| {
+        let mut ppm = PpmMeter::new(SR, PpmType::TypeII);
+        let amp = 10f64.powf((-18.0 + 9.0 + gain_db) / 20.0);
+        let n = (0.0015 * SR as f64) as usize;
+        let x: Vec<f32> = (0..n)
+            .map(|i| (amp * (TAU * 5000.0 * i as f64 / SR as f64).sin()) as f32)
+            .collect();
+        ppm.process(&x);
+        ppm.level_db()
+    };
+    let rise = read(10.0) - read(0.0);
+    assert!((5.0..=10.0 + 1e-3).contains(&rise), "rise {rise} dB");
+}
+
+/// §1.3.13: unidirectional pulses that read TEST at 1 ms read progressively less when
+/// shortened, and a 100 µs pulse reads at least 10 dB below TEST.
+#[test]
+fn ieee152_pulse_response() {
+    let pulse = |amp: f64, us: f64| {
+        let mut ppm = PpmMeter::new(SR, PpmType::TypeII);
+        let n = ((us * 1e-6 * SR as f64).round() as usize).max(1);
+        let mut x = vec![amp as f32; n];
+        x.extend(std::iter::repeat_n(0.0f32, 480));
+        let mut max = f32::NEG_INFINITY;
+        for c in x.chunks(16) {
+            ppm.process(c);
+            max = max.max(ppm.level_db());
+        }
+        max
+    };
+    // Amplitude for which a 1 ms pulse reads TEST (-18 dBFS).
+    let at_1ms = pulse(1.0, 1000.0);
+    let amp = 10f64.powf((-18.0 - at_1ms as f64) / 20.0);
+    let mut last = f32::INFINITY;
+    for us in [1000.0, 500.0, 200.0, 100.0, 50.0] {
+        let r = pulse(amp, us);
+        assert!(r <= last + 1e-4, "{us} µs: {r} not below {last}");
+        last = r;
+        if us == 100.0 {
+            assert!(r <= -18.0 - 10.0, "100 µs pulse reads {r} dBFS");
+        }
+    }
+}
+
+/// §1.3.15 / Tech 3205 §2.4: reversibility error at most 0.5 dB for an asymmetrically
+/// clipped signal (one polarity clipped to 25 %, DC removed).
+#[test]
+fn ieee152_reversibility_error() {
+    let amp = 10f64.powf((-18.0 + 9.0) / 20.0);
+    let n = SR as usize;
+    let raw: Vec<f64> = (0..n)
+        .map(|i| {
+            let s = (TAU * 1000.0 * i as f64 / SR as f64).sin();
+            if s < -0.25 {
+                -0.25
+            } else {
+                s
+            }
+        })
+        .collect();
+    let dc = raw.iter().sum::<f64>() / n as f64;
+    let read = |sign: f64| {
+        let mut ppm = PpmMeter::new(SR, PpmType::TypeII);
+        let x: Vec<f32> = raw.iter().map(|v| (sign * amp * (v - dc)) as f32).collect();
+        ppm.process(&x);
+        ppm.level_db()
+    };
+    let err = (read(1.0) - read(-1.0)).abs();
+    assert!(err <= 0.5, "reversibility error {err} dB");
+}

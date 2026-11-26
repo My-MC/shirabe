@@ -135,3 +135,88 @@ fn ballistics_rise_time_and_overshoot() {
         "overshoot {max_ratio:.4}"
     );
 }
+
+// --- IEEE Std 152-1991 §2.3 (standard volume indicator) ----------------------------------------
+
+fn vu_steady(sr: f64, freq: f64) -> f32 {
+    let mut vu = VuMeter::new(sr as f32, -18.0);
+    let amp = 10f64.powf(-18.0 / 20.0);
+    let x = sine(freq, sr, amp, 0.0, 3.0);
+    // Average the needle over the last second to remove the ripple at low frequencies.
+    let warm = (2.0 * sr) as usize;
+    vu.process(&x[..warm]);
+    let mut sum = 0.0;
+    let mut n = 0;
+    for c in x[warm..].chunks((sr / 1000.0) as usize) {
+        vu.process(c);
+        sum += vu.ratio();
+        n += 1;
+    }
+    gain_to_db((sum / n as f64) as f32)
+}
+
+/// §2.3.1: deviation from 1 kHz within 0.5 dB over 25 Hz to 16 kHz and within 0.2 dB over
+/// 35 Hz to 10 kHz.
+#[test]
+fn ieee152_vu_frequency_response() {
+    for sr in [44_100.0, 48_000.0, 96_000.0] {
+        let reference = vu_steady(sr, 1000.0);
+        for (freq, tol) in [
+            (25.0, 0.5),
+            (35.0, 0.2),
+            (100.0, 0.2),
+            (5000.0, 0.2),
+            (10_000.0, 0.2),
+            (12_000.0, 0.5),
+            (12_500.0, 0.5),
+            (16_000.0, 0.5),
+        ] {
+            let dev = vu_steady(sr, freq) - reference;
+            println!("sr={sr} f={freq}: {dev:+.3} dB");
+            assert!(dev.abs() <= tol, "sr={sr} f={freq}: {dev:+.3} dB");
+        }
+    }
+}
+
+/// §2.3.4 (3): after a reference-level tone is removed, the needle reaches the no-signal
+/// indication in 300 ms ± 10 %.
+#[test]
+fn ieee152_vu_return_time() {
+    let sr = 48_000.0;
+    let mut vu = VuMeter::new(sr as f32, -18.0);
+    vu.process(&sine(1000.0, sr, 10f64.powf(-18.0 / 20.0), 0.0, 3.0));
+    let silence = vec![0.0f32; 48];
+    let mut t = 0.0;
+    while vu.ratio() > 0.0 {
+        vu.process(&silence);
+        t += 0.001;
+        assert!(t < 2.0);
+    }
+    assert!((0.27..=0.33).contains(&t), "return time {t:.3} s");
+}
+
+/// §2.3.8: reversibility error at most 0.5 vu.
+#[test]
+fn ieee152_vu_reversibility_error() {
+    let sr = 48_000.0;
+    let n = (3.0 * sr) as usize;
+    let raw: Vec<f64> = (0..n)
+        .map(|i| {
+            let s = (TAU * 1000.0 * i as f64 / sr).sin();
+            if s < -0.25 {
+                -0.25
+            } else {
+                s
+            }
+        })
+        .collect();
+    let dc = raw.iter().sum::<f64>() / n as f64;
+    let read = |sign: f64| {
+        let mut vu = VuMeter::new(sr as f32, -18.0);
+        let x: Vec<f32> = raw.iter().map(|v| (sign * 0.1 * (v - dc)) as f32).collect();
+        vu.process(&x);
+        vu.vu()
+    };
+    let err = (read(1.0) - read(-1.0)).abs();
+    assert!(err <= 0.5, "reversibility error {err} vu");
+}

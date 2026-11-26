@@ -15,6 +15,7 @@ pub mod kweighting;
 pub mod level;
 pub mod loudness;
 pub mod osc;
+pub mod oversample;
 pub mod peak;
 pub mod ppm;
 pub mod true_peak;

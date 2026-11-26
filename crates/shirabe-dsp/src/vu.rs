@@ -1,7 +1,12 @@
 //! VU meter (IEC 60268-17): full-wave rectified signal driving a second-order (needle)
 //! system that reaches 99 % of the steady reading in 300 ms with about 1.5 % overshoot.
+//!
+//! Requirements are taken from IEEE Std 152-1991 §2.3 (identical to IEEE Std 152-1953 and to
+//! Chinn, Gannett and Morris, Proc. IRE, Jan. 1940). The rectifier works on the oversampled
+//! signal (see [`crate::oversample`]) so that tones near the Nyquist frequency read correctly.
 
 use crate::level::gain_to_db;
+use crate::oversample::Oversampler;
 
 /// Damping ratio giving 1.5 % overshoot: exp(-pi*z/sqrt(1-z^2)) = 0.015.
 const DAMPING: f64 = 0.8007;
@@ -47,18 +52,21 @@ pub struct VuMeter {
     velocity: f64,
     /// Rectified average of a sine at the reference level (reads 0 VU).
     reference: f64,
+    os: Oversampler,
 }
 
 impl VuMeter {
     /// Creates a meter. `reference_dbfs` is the peak level of a sine that reads 0 VU
     /// (for example -18 dBFS).
     pub fn new(sample_rate: f32, reference_dbfs: f32) -> Self {
+        let os = Oversampler::new(sample_rate);
         let mut meter = Self {
-            dt: 1.0 / sample_rate.max(1.0) as f64,
+            dt: 1.0 / (sample_rate.max(1.0) as f64 * os.factor() as f64),
             omega: natural_frequency(),
             position: 0.0,
             velocity: 0.0,
             reference: 1.0,
+            os,
         };
         meter.set_reference(reference_dbfs);
         meter
@@ -66,7 +74,8 @@ impl VuMeter {
 
     /// Changes the sample rate and clears the needle.
     pub fn prepare(&mut self, sample_rate: f32) {
-        self.dt = 1.0 / sample_rate.max(1.0) as f64;
+        self.os.prepare(sample_rate);
+        self.dt = 1.0 / (sample_rate.max(1.0) as f64 * self.os.factor() as f64);
         self.reset();
     }
 
@@ -80,6 +89,7 @@ impl VuMeter {
     pub fn reset(&mut self) {
         self.position = 0.0;
         self.velocity = 0.0;
+        self.os.reset();
     }
 
     /// Processes a block of samples.
@@ -87,12 +97,17 @@ impl VuMeter {
         let w2 = self.omega * self.omega;
         let damping = 2.0 * DAMPING * self.omega;
         // Semi-implicit Euler is stable here: omega * dt is far below 1 at audio rates.
+        let dt = self.dt;
+        let (mut position, mut velocity) = (self.position, self.velocity);
         for &s in samples {
-            let drive = (s as f64).abs();
-            let accel = w2 * (drive - self.position) - damping * self.velocity;
-            self.velocity += accel * self.dt;
-            self.position += self.velocity * self.dt;
+            self.os.push(s as f64, |y| {
+                let accel = w2 * (y.abs() - position) - damping * velocity;
+                velocity += accel * dt;
+                position += velocity * dt;
+            });
         }
+        self.position = position;
+        self.velocity = velocity;
         if self.position.abs() < 1e-20 {
             self.position = 0.0;
         }

@@ -5,8 +5,12 @@
 //! settle with the slower first stage. Both stages fall at a constant rate in dB. The charge
 //! rates were fitted to the standard 5 kHz tone-burst readings (see the tests); the reading
 //! is normalised at preparation time so that a steady 5 kHz tone reads its peak level.
+//!
+//! The rectifier works on the oversampled signal (see [`crate::oversample`]) so that the
+//! reading follows the continuous waveform, as an analogue rectifier does.
 
 use crate::level::{gain_to_db, MINUS_INFINITY_DB};
+use crate::oversample::Oversampler;
 use std::f64::consts::TAU;
 
 /// Meter type.
@@ -70,6 +74,7 @@ pub struct PpmMeter {
     release: f64,
     gain: f64,
     detector: Detector,
+    os: Oversampler,
 }
 
 impl PpmMeter {
@@ -82,6 +87,7 @@ impl PpmMeter {
             release: 1.0,
             gain: 1.0,
             detector: Detector::default(),
+            os: Oversampler::new(sample_rate),
         };
         meter.prepare(sample_rate);
         meter
@@ -90,7 +96,9 @@ impl PpmMeter {
     /// Changes the sample rate, recalculates the ballistics and clears the reading.
     /// Runs a short simulation; call it outside the audio callback.
     pub fn prepare(&mut self, sample_rate: f32) {
-        let sr = sample_rate.max(1.0) as f64;
+        self.os.prepare(sample_rate);
+        // The detector runs at the oversampled rate.
+        let sr = sample_rate.max(1.0) as f64 * self.os.factor() as f64;
         let (r1, r2) = self.kind.charge_rates();
         self.w1 = (r1 / sr).min(1.0);
         self.w2 = (r2 / sr).min(1.0);
@@ -119,13 +127,15 @@ impl PpmMeter {
     /// Returns the reading to rest.
     pub fn reset(&mut self) {
         self.detector = Detector::default();
+        self.os.reset();
     }
 
     /// Processes a block of samples. Does not allocate.
     pub fn process(&mut self, samples: &[f32]) {
         let mut d = self.detector;
+        let (w1, w2, release) = (self.w1, self.w2, self.release);
         for &s in samples {
-            d.step((s as f64).abs(), self.w1, self.w2, self.release);
+            self.os.push(s as f64, |y| d.step(y.abs(), w1, w2, release));
         }
         if d.z1.abs() < 1e-12 {
             d.z1 = 0.0;
