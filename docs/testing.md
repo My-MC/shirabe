@@ -257,6 +257,46 @@ cargo test -p shirabe-plugin the_editor_registers_every_tile_once
 Standard と Stereo のどちらも、導入前のビルドの画面と 1 ピクセルも違いませんでした。
 Standard ではプログラムタイマーと残光が実行ごとにわずかに変わるため、導入前のビルドを 2 回撮影した画面とも一致することを確認しています。
 
+### 外観プリセットファイルの確認（スタンドアロン）
+
+スタンドアロンアプリの「Appearance」を開き、レイアウトとテーマ色をファイルに書き出し、読み込みます。
+設定を分離するため、`XDG_CONFIG_HOME` に空のディレクトリを指定して起動します。
+
+```sh
+XDG_CONFIG_HOME=/tmp/shirabe-appearance DISPLAY=:99 ./target/debug/shirabe
+```
+
+「Source」を `None` にし、テストオシレーターを -18 dBFS で有効にすると、VU が 0 VU、Integrated が -18.0 LKFS のまま推移します。
+
+| 操作 | 期待される動作 |
+|---|---|
+| 新しいパスで Export | 指定したファイルを作り、形式、バージョン、レイアウト名、テーマ色だけを書く |
+| 同じパスでもう一度 Export | 上書きせず、「Overwrite」と「Cancel」を表示する。Cancel でファイルは変わらない |
+| レイアウトを Stereo、背景色を変えたファイルを Import | 配置と色だけが変わり、Integrated などの測定値は続く |
+| Import 後にアプリを再起動 | 読み込んだレイアウトと色で起動する |
+| 不正な色のファイルを Import | エラーを表示し、レイアウト、色、`standalone.json` は変わらない |
+| 640×440 に縮小 | 「Appearance」ボタンと、ラウドネスの全行、Time、Target が欠けない |
+
+2026-11-26 に Linux（Xvfb :97、ALSA、Source: None、テストオシレーター -18 dBFS）のスタンドアロンアプリで確認した結果は次のとおりです。
+
+| 確認したこと | 結果 |
+|---|---|
+| 初回の Export | `appearance.json` を 739 バイトで作成。トップレベルのキーは `format`、`layout`、`theme`、`version` のみ |
+| 既存ファイルへの Export | 上書きせず、赤い案内と「Overwrite」「Cancel」を表示。Cancel の前後でファイルの MD5 は不変 |
+| Stereo と独自色の Import | 配置が Stereo に変わり、背景 `#201018`、メーターはシアン、黄、ピンクに変化。Integrated は -18.0 LKFS のまま |
+| Import 後の `standalone.json` | `lay_preset` が 1.0、`theme.background` が `#201018`。`source` は `None`、`osc_on` は 1.0、`ld_tgt` は 0.0 のまま |
+| 再起動 | Stereo と背景色、メーター色が復元された |
+| 不正な色（`#zzzzzz`）の Import | 「Cannot import: Invalid theme: background must be #rrggbb, got '#zzzzzz'.」を表示。Stereo、背景色、`standalone.json` は不変 |
+| Import 後の Overwrite | 同じレイアウト名と色を書き出し、読み込み前の値と一致した |
+| 640×440 | 「Appearance」ボタン、Integrated、LRA、PLR、M max、S max、TP max、Time、Target が表示された |
+
+自動テストでは、ファイルの往復、未知の形式・バージョン・レイアウト・フィールドの拒否、色と色分け（個数と順序）の検証、64 KiB を超えるファイルの拒否、既存ファイルの保護、Import が `lay_preset` 以外のパラメーターを変えないこと、古い設定ファイルの読み込みを確認します。
+
+```sh
+cargo test -p shirabe-app appearance
+cargo test -p shirabe-app settings
+```
+
 ## GPU のない環境での動作
 
 エディターは OpenGL 3.2 で描画します。

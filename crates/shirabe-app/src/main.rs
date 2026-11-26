@@ -6,6 +6,7 @@
 // Release builds on Windows should not open a console window next to the GUI.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod appearance;
 mod audio;
 mod context;
 mod decode;
@@ -20,6 +21,7 @@ mod settings;
 #[cfg(target_os = "macos")]
 mod tap;
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use eframe::egui;
@@ -32,12 +34,29 @@ use shirabe_plugin::{
 };
 use shirabe_ui::Theme;
 
+use appearance::Appearance;
 use audio::{Choice, Source};
 use context::StandaloneContext;
 use decode::format_time;
 use output::DeviceRef;
 use player::Playback;
 use settings::Settings;
+
+/// Result of the last appearance import or export, shown in its window.
+struct AppearanceStatus {
+    text: String,
+    error: bool,
+}
+
+impl AppearanceStatus {
+    fn ok(text: String) -> Self {
+        Self { text, error: false }
+    }
+
+    fn error(text: String) -> Self {
+        Self { text, error: true }
+    }
+}
 
 struct App {
     params: Arc<ShirabeParams>,
@@ -61,22 +80,33 @@ struct App {
     /// Display-only history of the Lissajous view.
     scope: ScopeView,
     last_check: std::time::Instant,
+    /// Whether the appearance preset window is open.
+    show_appearance: bool,
+    /// Path typed for appearance import and export.
+    appearance_path: String,
+    /// Export target waiting for the user to confirm replacing it.
+    appearance_pending_overwrite: Option<PathBuf>,
+    /// Outcome of the last appearance action.
+    appearance_status: Option<AppearanceStatus>,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let theme = Theme::dark();
-        let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = theme.background;
-        visuals.window_fill = theme.background;
+        let settings = Settings::load();
+        // An imported theme is saved with the settings; unreadable colours fall back to the
+        // built-in dark theme instead of refusing to start.
+        let theme = settings
+            .theme
+            .as_ref()
+            .and_then(|spec| spec.to_theme().ok())
+            .unwrap_or_default();
         // eframe follows the system theme by default (light on many Windows setups); the
         // meters are designed for the dark theme only.
         cc.egui_ctx.set_theme(egui::Theme::Dark);
-        cc.egui_ctx.set_visuals_of(egui::Theme::Dark, visuals);
+        apply_visuals(&cc.egui_ctx, &theme);
         fonts::install(&cc.egui_ctx);
 
         let params = Arc::new(ShirabeParams::default());
-        let settings = Settings::load();
         context::load_params(params.as_ref(), &settings.params);
         let source = settings
             .source
@@ -110,6 +140,11 @@ impl App {
             saved_params: settings.params.clone(),
             scope: ScopeView::new(),
             last_check: std::time::Instant::now(),
+            show_appearance: false,
+            appearance_path: settings::default_appearance_path()
+                .map_or_else(String::new, |p| p.display().to_string()),
+            appearance_pending_overwrite: None,
+            appearance_status: None,
         };
         // A saved file is not started automatically; the user presses Play.
         if matches!(source, Source::File { .. }) {
@@ -160,6 +195,7 @@ impl App {
             source: Some(self.source.clone()),
             params: self.saved_params.clone(),
             output: self.output.clone(),
+            theme: Some(appearance::ThemeSpec::from_theme(&self.theme)),
         }
         .save();
     }
@@ -288,6 +324,15 @@ impl App {
             if let Some(e) = &self.start_error {
                 ui.label(egui::RichText::new(format!("Cannot start: {e}")).color(self.theme.over));
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button("Appearance")
+                    .on_hover_text("Import or export the layout and theme colours")
+                    .clicked()
+                {
+                    self.show_appearance = !self.show_appearance;
+                }
+            });
         });
         if let Some(s) = new_source {
             if s != self.source {
@@ -392,6 +437,153 @@ impl App {
         }
     }
 
+    /// Appearance preset window: a file path and the two explicit actions.
+    fn appearance_window(&mut self, ctx: &egui::Context) {
+        if !self.show_appearance {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Appearance preset")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(440.0)
+            .show(ctx, |ui| self.appearance_contents(ui));
+        self.show_appearance = open;
+    }
+
+    fn appearance_contents(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            egui::RichText::new(
+                "Layout and theme colours only. Sources, targets, the oscillator and measured \
+                 values stay unchanged.",
+            )
+            .small()
+            .color(ui.visuals().weak_text_color()),
+        );
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label("File");
+            let mut path = std::mem::take(&mut self.appearance_path);
+            ui.add(
+                egui::TextEdit::singleline(&mut path)
+                    .desired_width(310.0)
+                    .hint_text("Path to an appearance .json file"),
+            );
+            self.appearance_path = path;
+        });
+        ui.horizontal(|ui| {
+            if ui
+                .button("Import")
+                .on_hover_text("Apply the layout and colours from this file")
+                .clicked()
+            {
+                self.import_appearance(ui.ctx());
+            }
+            if ui
+                .button("Export")
+                .on_hover_text("Write the current layout and colours to this file")
+                .clicked()
+            {
+                self.export_appearance(false);
+            }
+            if self.appearance_pending_overwrite.is_some() {
+                if ui
+                    .button("Overwrite")
+                    .on_hover_text("Replace the file that already exists")
+                    .clicked()
+                {
+                    self.export_appearance(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    self.appearance_pending_overwrite = None;
+                    self.appearance_status = None;
+                }
+            }
+        });
+        if let Some(status) = &self.appearance_status {
+            let color = if status.error {
+                ui.visuals().error_fg_color
+            } else {
+                ui.visuals().weak_text_color()
+            };
+            ui.label(egui::RichText::new(&status.text).color(color));
+        }
+    }
+
+    fn import_appearance(&mut self, ctx: &egui::Context) {
+        let path = self.appearance_path.trim().to_owned();
+        if path.is_empty() {
+            self.appearance_status = Some(AppearanceStatus::error(
+                "Choose a file path to import.".to_owned(),
+            ));
+            return;
+        }
+        // `import` validates the whole file before it touches the layout parameter.
+        let result = {
+            let setter = ParamSetter {
+                raw_context: &self.context,
+            };
+            appearance::import(Path::new(&path), &self.params, &setter)
+        };
+        match result {
+            Ok(imported) => {
+                self.theme = imported.theme;
+                apply_visuals(ctx, &self.theme);
+                self.appearance_pending_overwrite = None;
+                // The layout is a parameter (saved by the autosave) but the theme is not,
+                // so save both now.
+                self.save_settings();
+                self.appearance_status = Some(AppearanceStatus::ok(format!("Imported {path}.")));
+            }
+            Err(error) => {
+                self.appearance_status =
+                    Some(AppearanceStatus::error(format!("Cannot import: {error}")));
+            }
+        }
+    }
+
+    /// Writes the current appearance. `overwrite` is only set after the user confirms the
+    /// file that was reported as existing, and that exact file is replaced.
+    fn export_appearance(&mut self, overwrite: bool) {
+        let typed = self.appearance_path.trim().to_owned();
+        let path = if overwrite {
+            self.appearance_pending_overwrite
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(&typed))
+        } else {
+            PathBuf::from(&typed)
+        };
+        if path.as_os_str().is_empty() {
+            self.appearance_status = Some(AppearanceStatus::error(
+                "Choose a file path to export.".to_owned(),
+            ));
+            return;
+        }
+        let current = Appearance::current(&self.params, &self.theme);
+        match appearance::save(&current, &path, overwrite) {
+            Ok(()) => {
+                self.appearance_pending_overwrite = None;
+                self.appearance_status = Some(AppearanceStatus::ok(format!(
+                    "Exported {}.",
+                    path.display()
+                )));
+            }
+            Err(appearance::Error::Exists) => {
+                self.appearance_pending_overwrite = Some(path.clone());
+                self.appearance_status = Some(AppearanceStatus::error(format!(
+                    "{} already exists; press Overwrite to replace it.",
+                    path.display()
+                )));
+            }
+            Err(error) => {
+                self.appearance_pending_overwrite = None;
+                self.appearance_status =
+                    Some(AppearanceStatus::error(format!("Cannot export: {error}")));
+            }
+        }
+    }
+
     /// Starts a file dropped on the window.
     fn take_dropped_file(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|i| {
@@ -434,11 +626,21 @@ impl eframe::App for App {
                 &mut self.scope,
             );
         });
+        self.appearance_window(ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_settings();
     }
+}
+
+/// Applies the colours that egui paints panels and windows with. The meter widgets take their
+/// colours from [`Theme`] directly.
+fn apply_visuals(ctx: &egui::Context, theme: &Theme) {
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = theme.background;
+    visuals.window_fill = theme.background;
+    ctx.set_visuals_of(egui::Theme::Dark, visuals);
 }
 
 /// Label of the file entry in the source list and the combo.

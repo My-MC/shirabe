@@ -24,6 +24,10 @@ pub struct Settings {
     /// Output device used for file playback; `None` uses the default device.
     #[serde(default)]
     pub output: Option<DeviceRef>,
+    /// Theme colours imported from an appearance preset; `None` uses the built-in dark theme.
+    /// Older settings files do not contain this field.
+    #[serde(default)]
+    pub theme: Option<crate::appearance::ThemeSpec>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -34,6 +38,11 @@ struct File {
 }
 
 fn path() -> Option<PathBuf> {
+    Some(config_dir()?.join("standalone.json"))
+}
+
+/// Directory holding the settings and the default appearance preset.
+pub fn config_dir() -> Option<PathBuf> {
     let dir = if cfg!(windows) {
         PathBuf::from(std::env::var_os("APPDATA")?).join("Shirabe")
     } else if cfg!(target_os = "macos") {
@@ -43,7 +52,12 @@ fn path() -> Option<PathBuf> {
     } else {
         PathBuf::from(std::env::var_os("HOME")?).join(".config/shirabe")
     };
-    Some(dir.join("standalone.json"))
+    Some(dir)
+}
+
+/// Default path offered for appearance export and import.
+pub fn default_appearance_path() -> Option<PathBuf> {
+    Some(config_dir()?.join("appearance.json"))
 }
 
 impl Settings {
@@ -70,5 +84,37 @@ impl Settings {
         if let Ok(json) = serde_json::to_vec_pretty(&file) {
             let _ = std::fs::write(p, json);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_saved_before_themes_existed_still_load() {
+        let text = r#"{
+            "version": 1,
+            "source": null,
+            "params": {"lay_preset": 1.0}
+        }"#;
+        let file: File = serde_json::from_str(text).unwrap();
+        assert!(file.settings.theme.is_none());
+        assert_eq!(file.settings.params.get("lay_preset"), Some(&1.0));
+    }
+
+    #[test]
+    fn an_imported_theme_is_saved_and_restored() {
+        let theme = crate::appearance::ThemeSpec::from_theme(&shirabe_ui::Theme::dark());
+        let file = File {
+            version: VERSION,
+            settings: Settings {
+                theme: Some(theme.clone()),
+                ..Settings::default()
+            },
+        };
+        let text = serde_json::to_string(&file).unwrap();
+        let back: File = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.settings.theme, Some(theme));
     }
 }
