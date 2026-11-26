@@ -607,4 +607,3 @@ DISPLAY=:99 XDG_CONFIG_HOME=/tmp/shirabe-export-test ./target/debug/shirabe &
 
 音声ファイルを入力にしたときのフルパスの扱いは、この確認では測っていません。
 単体テストで、既定では名前だけになり、指定したときだけフルパスが入ることを確認しています。
-
