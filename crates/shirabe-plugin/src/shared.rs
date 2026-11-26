@@ -155,11 +155,72 @@ impl StereoShared {
     }
 }
 
+/// Read-outs of the sidechain reference measurement.
+///
+/// Only the three programme values are published: the comparison shows how the main
+/// measurement differs from the reference, so the reference's own range, PLR and maxima are
+/// not exposed.
+pub struct ReferenceShared {
+    /// Reference momentary loudness in LUFS.
+    pub momentary: OptionalF32,
+    /// Reference short-term loudness in LUFS.
+    pub short_term: OptionalF32,
+    /// Reference integrated loudness in LUFS.
+    pub integrated: OptionalF32,
+}
+
+impl ReferenceShared {
+    fn new() -> Self {
+        Self {
+            momentary: OptionalF32::new(),
+            short_term: OptionalF32::new(),
+            integrated: OptionalF32::new(),
+        }
+    }
+
+    /// Publishes a reference read-out (audio thread).
+    pub fn store(&self, r: &LoudnessReadout) {
+        self.momentary.store(r.momentary);
+        self.short_term.store(r.short_term);
+        self.integrated.store(r.integrated);
+    }
+
+    fn clear(&self) {
+        self.store(&LoudnessReadout::default());
+    }
+}
+
+/// Deltas of the main measurement against the reference, in LU (main − reference).
+///
+/// A value is only present when both sides are measurements. A silent side reads
+/// `-inf` rather than a value, so the delta is unavailable and the read-out shows dashes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LoudnessDeltas {
+    /// Momentary difference in LU.
+    pub momentary: Option<f32>,
+    /// Short-term difference in LU.
+    pub short_term: Option<f32>,
+    /// Integrated difference in LU.
+    pub integrated: Option<f32>,
+}
+
+impl LoudnessDeltas {
+    /// The difference in LU, or `None` if either side is unavailable or not finite.
+    fn difference(main: Option<f32>, reference: Option<f32>) -> Option<f32> {
+        match (main, reference) {
+            (Some(m), Some(r)) if m.is_finite() && r.is_finite() => Some(m - r),
+            _ => None,
+        }
+    }
+}
+
 /// Everything the editor can read.
 pub struct SharedMeters {
     channels: [ChannelReadout; MAX_CHANNELS],
     /// Programme loudness of all channels.
     pub loudness: LoudnessShared,
+    /// Loudness of the sidechain reference input, when the host's layout has one.
+    pub reference: ReferenceShared,
     /// Correlation and balance of the stereo input (audio thread writes, editor reads).
     pub stereo: StereoShared,
     /// Recent stereo frames for the Lissajous view (audio thread writes, editor reads).
@@ -174,6 +235,9 @@ pub struct SharedMeters {
     active_channels: AtomicUsize,
     sample_rate: AtomicF32,
     reset_requested: AtomicBool,
+    /// Whether the current audio IO layout has a sidechain input (audio thread writes from
+    /// `prepare`, editor reads).
+    reference_available: AtomicBool,
     /// Whether the integrated loudness and loudness range are running (editor writes).
     integrating: AtomicBool,
     /// Measured programme duration in seconds since the last reset (audio thread writes).
@@ -188,6 +252,7 @@ impl SharedMeters {
         Self {
             channels: std::array::from_fn(|_| ChannelReadout::new()),
             loudness: LoudnessShared::new(),
+            reference: ReferenceShared::new(),
             stereo: StereoShared::new(),
             scope: StereoScope::new(),
             history: LoudnessHistory::new(),
@@ -195,17 +260,21 @@ impl SharedMeters {
             active_channels: AtomicUsize::new(2),
             sample_rate: AtomicF32::new(0.0),
             reset_requested: AtomicBool::new(false),
+            reference_available: AtomicBool::new(false),
             integrating: AtomicBool::new(true),
             programme_seconds: AtomicF32::new(0.0),
             blocks: AtomicU64::new(0),
         }
     }
 
-    /// Sets the active channel count and sample rate (called from `initialize`).
-    pub fn configure(&self, channels: usize, sample_rate: f32) {
+    /// Sets the active channel count, the sample rate and whether the layout has a sidechain
+    /// input (called from `initialize`).
+    pub fn configure(&self, channels: usize, sample_rate: f32, reference_available: bool) {
         self.active_channels
             .store(channels.min(MAX_CHANNELS), Ordering::Relaxed);
         self.sample_rate.store(sample_rate, Ordering::Relaxed);
+        self.reference_available
+            .store(reference_available, Ordering::Relaxed);
         // A new rate needs a new interval; the old points describe the previous rate.
         self.history.prepare(sample_rate);
         self.clear();
@@ -218,6 +287,7 @@ impl SharedMeters {
         }
         self.loudness.store(&LoudnessReadout::default());
         self.loudness.plr.store(None);
+        self.reference.clear();
         self.stereo.clear();
         self.scope.clear();
         self.history.clear();
@@ -242,6 +312,31 @@ impl SharedMeters {
     /// Current sample rate in Hz (0 before the first initialisation).
     pub fn sample_rate(&self) -> f32 {
         self.sample_rate.load(Ordering::Relaxed)
+    }
+
+    /// Whether the current audio IO layout has a sidechain input.
+    pub fn reference_available(&self) -> bool {
+        self.reference_available.load(Ordering::Relaxed)
+    }
+
+    /// Comparison of the main loudness with the sidechain reference (editor).
+    ///
+    /// The values are read from independent atomics, so a delta may mix two adjacent blocks.
+    pub fn deltas(&self) -> LoudnessDeltas {
+        LoudnessDeltas {
+            momentary: LoudnessDeltas::difference(
+                self.loudness.momentary.load(),
+                self.reference.momentary.load(),
+            ),
+            short_term: LoudnessDeltas::difference(
+                self.loudness.short_term.load(),
+                self.reference.short_term.load(),
+            ),
+            integrated: LoudnessDeltas::difference(
+                self.loudness.integrated.load(),
+                self.reference.integrated.load(),
+            ),
+        }
     }
 
     /// Asks the audio thread to clear the maxima and the programme loudness (editor).

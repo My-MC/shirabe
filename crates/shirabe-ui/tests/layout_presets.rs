@@ -8,7 +8,7 @@
 use shirabe_ui::egui::{pos2, vec2, Rect};
 use shirabe_ui::layout::{
     arrange, LayoutPreset, TileId, COLUMN_WIDTH, MIN_HISTORY_HEIGHT, MIN_READOUT_HEIGHT,
-    MIN_SPECTRUM_HEIGHT, SECTION_GAP,
+    MIN_REFERENCE_HEIGHT, MIN_SPECTRUM_HEIGHT, SECTION_GAP,
 };
 
 fn area(width: f32, height: f32) -> Rect {
@@ -158,6 +158,7 @@ fn both_presets_place_every_tile_at_the_minimum_window_size() {
         LayoutPreset::Stereo,
         LayoutPreset::History,
         LayoutPreset::Spectrum,
+        LayoutPreset::Compare,
     ] {
         for (w, h) in [(640.0, 300.0), (640.0, 380.0), (820.0, 500.0)] {
             assert_tiles_fit(preset, area(w, h));
@@ -288,4 +289,52 @@ fn the_spectrum_preset_drops_the_tile_before_the_readout() {
     let spectrum = arrangement.tile(TileId::Spectrum).expect("spectrum");
     assert!(spectrum.height() >= MIN_SPECTRUM_HEIGHT);
     assert_tiles_fit(LayoutPreset::Spectrum, rect);
+}
+
+#[test]
+fn the_compare_preset_puts_the_reference_where_the_scope_sits() {
+    let rect = area(900.0, 400.0);
+    let arrangement = arrange(LayoutPreset::Compare, rect);
+    let standard = arrange(LayoutPreset::Standard, rect);
+
+    // The meters and the read-out stay exactly where Standard puts them.
+    for tile in [
+        TileId::Peak,
+        TileId::Level,
+        TileId::Loudness,
+        TileId::Readout,
+    ] {
+        let here = arrangement.tile(tile).unwrap_or_else(|| panic!("{tile:?}"));
+        let there = standard.tile(tile).unwrap_or_else(|| panic!("{tile:?}"));
+        assert_eq!(here, there, "{tile:?}");
+    }
+
+    // The comparison takes the scope's rectangle and the scope is not drawn.
+    let scope = standard.tile(TileId::Scope).expect("standard scope");
+    let reference = arrangement.tile(TileId::Reference).expect("reference");
+    assert_eq!(reference, scope);
+    assert!(arrangement.tile(TileId::Scope).is_none());
+    assert!(reference.height() >= MIN_REFERENCE_HEIGHT);
+    assert_tiles_fit(LayoutPreset::Compare, rect);
+}
+
+#[test]
+fn the_compare_preset_drops_the_reference_before_the_readout() {
+    // A column too short for the read-out and the comparison keeps the numbers.
+    for (w, h) in [(640.0, 300.0), (640.0, 260.0), (820.0, 240.0)] {
+        let rect = area(w, h);
+        let arrangement = arrange(LayoutPreset::Compare, rect);
+        assert!(arrangement.tile(TileId::Reference).is_none(), "{w}x{h}");
+        let readout = arrangement.tile(TileId::Readout).expect("read-out");
+        assert!(readout.height() >= MIN_READOUT_HEIGHT, "{w}x{h}");
+        assert!(arrangement.tile(TileId::Peak).is_some(), "{w}x{h}");
+        assert_tiles_fit(LayoutPreset::Compare, rect);
+    }
+
+    // The minimum window size still has room for it, like the Standard scope.
+    let rect = area(640.0, 380.0);
+    let arrangement = arrange(LayoutPreset::Compare, rect);
+    let reference = arrangement.tile(TileId::Reference).expect("reference");
+    assert!(reference.height() >= MIN_REFERENCE_HEIGHT);
+    assert_tiles_fit(LayoutPreset::Compare, rect);
 }

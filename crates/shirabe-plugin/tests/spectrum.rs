@@ -22,7 +22,7 @@ fn rig(channels: usize) -> (MeterEngine, Arc<SharedMeters>) {
     let params = Arc::new(ShirabeParams::default());
     let shared = Arc::new(SharedMeters::new());
     let mut engine = MeterEngine::new(params, shared.clone());
-    engine.prepare(RATE, channels);
+    engine.prepare(RATE, channels, 0);
     (engine, shared)
 }
 
@@ -47,7 +47,7 @@ fn a_stereo_signal_is_captured_as_a_mono_sum() {
     let (mut engine, shared) = rig(2);
     let mut left = signal.clone();
     let mut right = signal.clone();
-    engine.process(&mut [&mut left[..], &mut right[..]], false);
+    engine.process(&mut [&mut left[..], &mut right[..]], &mut [], false);
 
     let mut analyzer = new_analyzer();
     assert!(analyzer.analyze(&shared.spectrum));
@@ -57,7 +57,7 @@ fn a_stereo_signal_is_captured_as_a_mono_sum() {
     let (mut engine, shared) = rig(2);
     let mut left = signal.clone();
     let mut right = vec![0.0; signal.len()];
-    engine.process(&mut [&mut left[..], &mut right[..]], false);
+    engine.process(&mut [&mut left[..], &mut right[..]], &mut [], false);
     let mut analyzer = new_analyzer();
     assert!(analyzer.analyze(&shared.spectrum));
     let single = band_1k(&analyzer);
@@ -68,7 +68,7 @@ fn a_stereo_signal_is_captured_as_a_mono_sum() {
     let (mut engine, shared) = rig(2);
     let mut left = full.clone();
     let mut right = full;
-    engine.process(&mut [&mut left[..], &mut right[..]], false);
+    engine.process(&mut [&mut left[..], &mut right[..]], &mut [], false);
     let mut analyzer = new_analyzer();
     assert!(analyzer.analyze(&shared.spectrum));
     assert!(band_1k(&analyzer).abs() < 0.3, "{}", band_1k(&analyzer));
@@ -79,7 +79,7 @@ fn a_mono_input_is_captured_without_duplication() {
     let signal = sine(999.023, 1.0, FFT_SIZE * 2);
     let (mut engine, shared) = rig(1);
     let mut channel = signal;
-    engine.process(&mut [&mut channel[..]], false);
+    engine.process(&mut [&mut channel[..]], &mut [], false);
     let mut analyzer = new_analyzer();
     assert!(analyzer.analyze(&shared.spectrum));
     assert!(band_1k(&analyzer).abs() < 0.3);
@@ -91,13 +91,13 @@ fn reset_clears_the_captured_spectrum() {
     let (mut engine, shared) = rig(2);
     let mut left = sine(1000.0, 0.5, FFT_SIZE + 32);
     let mut right = left.clone();
-    engine.process(&mut [&mut left[..], &mut right[..]], false);
+    engine.process(&mut [&mut left[..], &mut right[..]], &mut [], false);
     let before = shared.spectrum.epoch();
     assert!(shared.spectrum.written() > 0);
     shared.request_reset();
     let mut left = [0.0f32; 32];
     let mut right = [0.0f32; 32];
-    engine.process(&mut [&mut left[..], &mut right[..]], false);
+    engine.process(&mut [&mut left[..], &mut right[..]], &mut [], false);
     assert!(shared.spectrum.epoch() > before);
     assert!(shared.spectrum.written() <= 32);
 }
@@ -109,7 +109,7 @@ fn the_audio_thread_does_not_allocate_while_capturing() {
     let mut right = left.clone();
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..8 {
-            engine.process(&mut [&mut left[..], &mut right[..]], false);
+            engine.process(&mut [&mut left[..], &mut right[..]], &mut [], false);
         }
     });
     assert!(_shared.spectrum.written() > 0);

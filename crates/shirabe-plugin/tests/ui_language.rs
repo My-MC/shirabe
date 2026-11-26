@@ -127,6 +127,7 @@ fn render(
                     &mut spectrum,
                     text,
                     true,
+                    true,
                 );
             });
         },
@@ -159,7 +160,7 @@ fn set_custom_target(params: &ShirabeParams) {
 
 fn live_meters() -> SharedMeters {
     let shared = SharedMeters::new();
-    shared.configure(2, 48_000.0);
+    shared.configure(2, 48_000.0, false);
     shared.stereo.correlation.store(Some(1.0));
     shared.stereo.balance.store(Some(-0.6));
     shared.loudness.integrated.store(Some(-23.0));
@@ -240,7 +241,7 @@ fn both_languages_fit_the_minimum_window() {
         set_custom_target(&params);
         let shared = live_meters();
         // Worst case for the header: the longest rate, correlation and balance labels.
-        shared.configure(2, 192_000.0);
+        shared.configure(2, 192_000.0, false);
         let frame = render(&params, &shared, text, vec2(640.0, 380.0), &TestGuiContext);
 
         for (label, bounds, clip) in frame.texts() {

@@ -51,6 +51,16 @@ pub fn format_lufs(value: Option<f32>) -> String {
     }
 }
 
+/// Formats a loudness difference in LU with its sign, or `--` when either side is
+/// unavailable. Silence and other non-finite values are not differences, so they read as
+/// dashes instead of a huge boost.
+pub fn format_delta_lu(value: Option<f32>) -> String {
+    match value {
+        Some(v) if v.is_finite() => format!("{:+.*}", 1, round_tenth(v)),
+        _ => "--".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,5 +77,18 @@ mod tests {
     fn silence_and_missing_values() {
         assert_eq!(format_db(-150.0), "-inf");
         assert_eq!(format_lufs(None), "--");
+    }
+
+    #[test]
+    fn loudness_differences_keep_their_sign_and_read_dashes_when_absent() {
+        assert_eq!(format_delta_lu(Some(6.02)), "+6.0");
+        assert_eq!(format_delta_lu(Some(-1.24)), "-1.2");
+        // Rounded to zero must not print "-0.0".
+        assert_eq!(format_delta_lu(Some(-0.02)), "+0.0");
+        assert_eq!(format_delta_lu(None), "--");
+        // Silence on either side is not a measurement, so it must not read as a huge boost.
+        assert_eq!(format_delta_lu(Some(f32::NEG_INFINITY)), "--");
+        assert_eq!(format_delta_lu(Some(f32::INFINITY)), "--");
+        assert_eq!(format_delta_lu(Some(f32::NAN)), "--");
     }
 }

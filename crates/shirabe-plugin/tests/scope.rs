@@ -15,7 +15,7 @@ fn engine(channels: usize) -> (MeterEngine, Arc<SharedMeters>) {
     let params = Arc::new(ShirabeParams::default());
     let shared = Arc::new(SharedMeters::new());
     let mut engine = MeterEngine::new(params, shared.clone());
-    engine.prepare(RATE, channels);
+    engine.prepare(RATE, channels, 0);
     (engine, shared)
 }
 
@@ -35,7 +35,7 @@ fn run(engine: &mut MeterEngine, phase: f32, blocks: usize) {
         }
         first += frames;
         let mut slices: [&mut [f32]; 2] = [&mut left, &mut right];
-        engine.process(&mut slices, false);
+        engine.process(&mut slices, &mut [], false);
     }
 }
 
@@ -97,7 +97,7 @@ fn silence_sits_at_the_centre() {
     let mut left = [0.0f32; 256];
     let mut right = [0.0f32; 256];
     let mut slices: [&mut [f32]; 2] = [&mut left, &mut right];
-    engine.process(&mut slices, false);
+    engine.process(&mut slices, &mut [], false);
     let points = figure(&shared);
     assert!(!points.is_empty());
     assert!(points.iter().all(|&(m, s)| m == 0.0 && s == 0.0));
@@ -111,7 +111,7 @@ fn a_mono_input_publishes_no_stereo_figure() {
         *sample = 0.5 * (i as f32 * 0.1).sin();
     }
     let mut slices: [&mut [f32]; 1] = [&mut mono];
-    engine.process(&mut slices, false);
+    engine.process(&mut slices, &mut [], false);
     assert_eq!(shared.active_channels(), 1);
     assert!(figure(&shared).is_empty());
 }
@@ -121,10 +121,10 @@ fn switching_to_mono_clears_the_previous_stereo_figure() {
     let (mut engine, shared) = engine(2);
     run(&mut engine, 0.0, 4);
     assert!(!figure(&shared).is_empty());
-    engine.prepare(RATE, 1);
+    engine.prepare(RATE, 1, 0);
     let mut mono = [0.0f32; 64];
     let mut slices: [&mut [f32]; 1] = [&mut mono];
-    engine.process(&mut slices, false);
+    engine.process(&mut slices, &mut [], false);
     assert!(figure(&shared).is_empty());
 }
 
@@ -217,7 +217,7 @@ fn the_vectorscope_shows_no_figure_for_mono_input() {
     let (mut engine, shared) = engine(1);
     let mut mono = [0.25f32; 128];
     let mut slices: [&mut [f32]; 1] = [&mut mono];
-    engine.process(&mut slices, false);
+    engine.process(&mut slices, &mut [], false);
     let mut view = ScopeView::new();
     view.update(&shared, 1, 0.0, true, false, ScopePlane::LeftRight);
     assert!(view.mono());
@@ -245,11 +245,11 @@ fn the_vectorscope_view_does_not_change_the_audio_or_the_meters() {
         let mut control_right = right.clone();
         {
             let mut slices: [&mut [f32]; 2] = [&mut left, &mut right];
-            viewed.process(&mut slices, false);
+            viewed.process(&mut slices, &mut [], false);
         }
         {
             let mut slices: [&mut [f32]; 2] = [&mut control_left, &mut control_right];
-            control.process(&mut slices, false);
+            control.process(&mut slices, &mut [], false);
         }
         assert_eq!(left, control_left);
         assert_eq!(right, control_right);
@@ -343,7 +343,7 @@ fn switching_to_mono_clears_the_trail() {
     view.update(&shared, 2, 0.0, true, false, ScopePlane::MidSide);
     assert!(!view.trail().is_empty());
 
-    engine.prepare(RATE, 1);
+    engine.prepare(RATE, 1, 0);
     view.update(&shared, 1, 1.0 / 60.0, true, false, ScopePlane::MidSide);
     assert!(view.trail().is_empty());
     assert!(view.mono());

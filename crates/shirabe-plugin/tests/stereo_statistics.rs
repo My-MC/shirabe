@@ -22,7 +22,7 @@ fn rig(channels: usize) -> Rig {
     let params = Arc::new(ShirabeParams::default());
     let shared = Arc::new(SharedMeters::new());
     let mut engine = MeterEngine::new(params.clone(), shared.clone());
-    engine.prepare(RATE, channels);
+    engine.prepare(RATE, channels, 0);
     Rig {
         engine,
         params,
@@ -33,7 +33,7 @@ fn rig(channels: usize) -> Rig {
 /// Runs one block through the engine under the same allocation guard the debug plugin build
 /// uses, so a callback that allocates fails every test in this file.
 fn process(rig: &mut Rig, slices: &mut [&mut [f32]]) {
-    assert_no_alloc::assert_no_alloc(|| rig.engine.process(slices, false));
+    assert_no_alloc::assert_no_alloc(|| rig.engine.process(slices, &mut [], false));
 }
 
 /// The guard is only meaningful if it is actually installed in this test binary. It aborts
@@ -141,7 +141,7 @@ fn switching_to_mono_clears_the_previous_reading() {
     run(&mut rig, 0.0, 1.0, FULL);
     assert!(rig.shared.stereo.correlation.load().is_some());
 
-    rig.engine.prepare(RATE, 1);
+    rig.engine.prepare(RATE, 1, 0);
     let mut mono = [0.0f32; 64];
     let mut slices: [&mut [f32]; 1] = [&mut mono];
     process(&mut rig, &mut slices);
@@ -235,7 +235,7 @@ fn preparing_a_new_sample_rate_restarts_the_window() {
     run(&mut rig, 0.0, 1.0, FULL);
     assert!(rig.shared.stereo.correlation.load().is_some());
 
-    rig.engine.prepare(96_000.0, 2);
+    rig.engine.prepare(96_000.0, 2, 0);
     assert_eq!(rig.shared.stereo.correlation.load(), None);
     assert_eq!(rig.shared.stereo.balance.load(), None);
 }

@@ -178,6 +178,11 @@ pub enum LayoutPreset {
     #[id = "spectrum"]
     #[name = "Spectrum"]
     Spectrum,
+    /// The Standard meters with the sidechain reference comparison in the scope's place.
+    /// Appended after `spectrum`, so every stored layout value keeps its meaning.
+    #[id = "compare"]
+    #[name = "Compare"]
+    Compare,
 }
 
 impl LayoutPreset {
@@ -188,6 +193,7 @@ impl LayoutPreset {
             Self::Stereo => shirabe_ui::layout::LayoutPreset::Stereo,
             Self::History => shirabe_ui::layout::LayoutPreset::History,
             Self::Spectrum => shirabe_ui::layout::LayoutPreset::Spectrum,
+            Self::Compare => shirabe_ui::layout::LayoutPreset::Compare,
         }
     }
 }
@@ -509,6 +515,35 @@ mod tests {
     }
 
     #[test]
+    fn the_compare_layout_is_appended_and_keeps_the_older_meanings() {
+        let params = ShirabeParams::default();
+        // Appending the preset keeps every stored value: index 4 is new, 0..=3 do not move.
+        assert_eq!(
+            LayoutPreset::ids(),
+            Some(&["standard", "stereo", "history", "spectrum", "compare"][..])
+        );
+        assert_eq!(LayoutPreset::from_index(1), LayoutPreset::Stereo);
+        assert_eq!(LayoutPreset::from_index(2), LayoutPreset::History);
+        assert_eq!(LayoutPreset::from_index(3), LayoutPreset::Spectrum);
+        assert_eq!(LayoutPreset::from_index(4), LayoutPreset::Compare);
+        assert_eq!(
+            LayoutPreset::Compare.geometry(),
+            shirabe_ui::layout::LayoutPreset::Compare
+        );
+        // A display-only layout adds no parameter and moves none.
+        let ids: Vec<String> = params
+            .param_map()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(ids.last().map(String::as_str), Some("spc_mode"));
+        assert!(params
+            .layout_preset
+            .flags()
+            .contains(ParamFlags::NON_AUTOMATABLE));
+    }
+
+    #[test]
     fn the_vectorscope_switch_is_opt_in_non_automatable_and_keeps_its_index() {
         let params = ShirabeParams::default();
         assert!(!params.scope_view_lr.value());
@@ -600,7 +635,7 @@ mod tests {
         // parameters by ID, and `standalone.json` stores the plain index.
         assert_eq!(
             LayoutPreset::ids(),
-            Some(&["standard", "stereo", "history", "spectrum"][..])
+            Some(&["standard", "stereo", "history", "spectrum", "compare"][..])
         );
         assert_eq!(LayoutPreset::from_index(1), LayoutPreset::Stereo);
         assert_eq!(LayoutPreset::from_index(2), LayoutPreset::History);
@@ -624,7 +659,7 @@ mod tests {
         // The stored variant ids are permanent, and the new preset is only appended.
         assert_eq!(
             LayoutPreset::ids(),
-            Some(&["standard", "stereo", "history", "spectrum"][..])
+            Some(&["standard", "stereo", "history", "spectrum", "compare"][..])
         );
         assert_eq!(LayoutPreset::from_index(3), LayoutPreset::Spectrum);
         assert_eq!(

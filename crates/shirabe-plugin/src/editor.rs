@@ -27,7 +27,8 @@ use shirabe_ui::scope::{
 use shirabe_ui::spectrum::{self as spectrum_tile, SpectrumRender};
 use shirabe_ui::view::{MeterView, MeterViewRegistry};
 use shirabe_ui::{
-    draw_level_bar, draw_marker, draw_scale_labels, format_db, format_lufs, MeterScale, Theme, Zone,
+    draw_level_bar, draw_marker, draw_scale_labels, format_db, format_delta_lu, format_lufs,
+    MeterScale, Theme, Zone,
 };
 
 use crate::params::{
@@ -93,6 +94,9 @@ pub(crate) fn create(
                     &mut state.spectrum,
                     text,
                     japanese_attempted,
+                    // The plug-in can offer a host sidechain input; the layouts decide
+                    // whether the current instance has one.
+                    true,
                 );
             });
         },
@@ -172,8 +176,18 @@ pub fn draw(
     spectrum: &mut SpectrumView,
     text: Text,
     japanese_attempted: bool,
+    sidechain_supported: bool,
 ) {
-    header(ui, params, shared, setter, theme, text, japanese_attempted);
+    header(
+        ui,
+        params,
+        shared,
+        setter,
+        theme,
+        text,
+        japanese_attempted,
+        sidechain_supported,
+    );
     ui.separator();
 
     let mut controls = CONTROLS_HEIGHT;
@@ -182,7 +196,16 @@ pub fn draw(
     }
     let height = (ui.available_height() - controls).max(120.0);
     meters(
-        ui, params, shared, theme, height, scope, history, spectrum, text,
+        ui,
+        params,
+        shared,
+        theme,
+        height,
+        scope,
+        history,
+        spectrum,
+        text,
+        sidechain_supported,
     );
 
     ui.separator();
@@ -225,6 +248,7 @@ impl ChannelSide {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn header(
     ui: &mut egui::Ui,
     params: &ShirabeParams,
@@ -233,6 +257,7 @@ fn header(
     theme: &Theme,
     text: Text,
     japanese_attempted: bool,
+    sidechain_supported: bool,
 ) {
     ui.horizontal(|ui| {
         ui.label(
@@ -278,17 +303,15 @@ fn header(
         ui.separator();
         ui.label(RichText::new(text.layout()).color(theme.text_dim))
             .on_hover_text(text.layout_hint());
+        // The comparison needs a host sidechain input, so the standalone application, which
+        // has none, does not offer it.
+        let presets = layout_presets(sidechain_supported);
         combo(
             ui,
             "layout-preset",
             &params.layout_preset,
             setter,
-            &[
-                LayoutPreset::Standard,
-                LayoutPreset::Stereo,
-                LayoutPreset::History,
-                LayoutPreset::Spectrum,
-            ],
+            presets,
             |preset| layout_preset_name(text, preset),
         );
 
@@ -491,6 +514,7 @@ fn meters(
     history: &mut HistoryView,
     spectrum: &mut SpectrumView,
     text: Text,
+    sidechain_supported: bool,
 ) {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
@@ -509,7 +533,8 @@ fn meters(
 
     // The preset decides which tiles exist and where they go; the registered view of each
     // tile draws into its rectangle.
-    let arrangement = arrange(params.layout_preset.value().geometry(), rect);
+    let geometry = geometry_for(params.layout_preset.value(), sidechain_supported);
+    let arrangement = arrange(geometry, rect);
     let loudness = LoudnessView::new(params, text);
     let mut ctx = MeterCtx {
         shared,
@@ -558,6 +583,7 @@ fn tile_view(id: TileId) -> fn(&mut MeterCtx<'_>, &Painter, Rect) {
         TileId::Scope => tile_scope,
         TileId::History => tile_history,
         TileId::Spectrum => tile_spectrum,
+        TileId::Reference => tile_reference,
     }
 }
 
@@ -1513,6 +1539,65 @@ fn loudness_panel(
     }
 }
 
+/// Draws the reference comparison: the deltas of the main measurement against the sidechain
+/// input, in LU (main − reference). A missing or silent side is shown as `--`, never as zero.
+fn reference_section(
+    painter: &Painter,
+    rect: Rect,
+    shared: &SharedMeters,
+    theme: &Theme,
+    text: Text,
+) {
+    painter.rect_filled(rect, 4.0, theme.panel);
+    let left = rect.left() + 10.0;
+    let right = rect.right() - 10.0;
+    let mut y = rect.top() + 10.0;
+    painter.text(
+        pos2(left, y),
+        Align2::LEFT_TOP,
+        text.reference_title(),
+        FontId::proportional(11.0),
+        theme.text_dim,
+    );
+    y += 16.0;
+    let deltas = shared.deltas();
+    for (label, delta) in [
+        ("M", deltas.momentary),
+        ("S", deltas.short_term),
+        ("I", deltas.integrated),
+    ] {
+        painter.text(
+            pos2(left, y),
+            Align2::LEFT_TOP,
+            label,
+            FontId::proportional(12.0),
+            theme.text_dim,
+        );
+        painter.text(
+            pos2(right, y),
+            Align2::RIGHT_TOP,
+            format!("{} LU", format_delta_lu(delta)),
+            FontId::monospace(12.0),
+            match delta {
+                Some(_) => theme.text,
+                None => theme.text_dim,
+            },
+        );
+        y += 18.0;
+    }
+    // Without an auxiliary input in the host layout there is nothing to compare against;
+    // say so instead of leaving the reader guessing why every value is a dash.
+    if !shared.reference_available() && y + 12.0 <= rect.bottom() {
+        painter.text(
+            pos2(left, y),
+            Align2::LEFT_TOP,
+            text.reference_missing(),
+            FontId::proportional(10.0),
+            theme.text_dim,
+        );
+    }
+}
+
 fn combo<E: Enum + PartialEq + Copy + 'static>(
     ui: &mut egui::Ui,
     id: &str,
@@ -1701,7 +1786,42 @@ fn layout_preset_name(text: Text, preset: LayoutPreset) -> &'static str {
         LayoutPreset::Stereo => text.layout_stereo(),
         LayoutPreset::History => text.layout_history(),
         LayoutPreset::Spectrum => text.layout_spectrum(),
+        LayoutPreset::Compare => text.layout_compare(),
     }
+}
+
+/// The layout presets on offer. `Compare` needs a host sidechain input, so a target without
+/// one (the standalone application) does not list it.
+const LAYOUT_PRESETS: [LayoutPreset; 5] = [
+    LayoutPreset::Standard,
+    LayoutPreset::Stereo,
+    LayoutPreset::History,
+    LayoutPreset::Spectrum,
+    LayoutPreset::Compare,
+];
+
+fn layout_presets(sidechain_supported: bool) -> &'static [LayoutPreset] {
+    if sidechain_supported {
+        &LAYOUT_PRESETS
+    } else {
+        &LAYOUT_PRESETS[..4]
+    }
+}
+
+/// The geometry to draw for `preset` on this target. A stored `Compare` falls back to
+/// `Standard` where the comparison cannot work, so the meters stay visible.
+fn geometry_for(
+    preset: LayoutPreset,
+    sidechain_supported: bool,
+) -> shirabe_ui::layout::LayoutPreset {
+    match preset {
+        LayoutPreset::Compare if !sidechain_supported => shirabe_ui::layout::LayoutPreset::Standard,
+        _ => preset.geometry(),
+    }
+}
+
+fn tile_reference(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
+    reference_section(painter, rect, ctx.shared, ctx.theme, ctx.text);
 }
 
 fn level_mode_name(text: Text, m: LevelMode) -> &'static str {
@@ -1795,6 +1915,15 @@ mod tests {
     /// Renders the real editor window at `size` with `preset` and a Custom target, seeded with
     /// the values that make every read-out row and the unstable-LRA note visible.
     fn window_frame(preset: LayoutPreset, size: egui::Vec2) -> (egui::FullOutput, Theme) {
+        window_frame_with_reference(preset, size, true)
+    }
+
+    /// The same, with or without a sidechain reference in the current layout.
+    fn window_frame_with_reference(
+        preset: LayoutPreset,
+        size: egui::Vec2,
+        with_reference: bool,
+    ) -> (egui::FullOutput, Theme) {
         let params = ShirabeParams::default();
         // These pointers come from the live parameters owned by this test.
         unsafe {
@@ -1811,10 +1940,21 @@ mod tests {
         assert_eq!(params.layout_preset.value(), preset);
         assert_eq!(params.loudness_target.value(), LoudnessTarget::Custom);
         let shared = SharedMeters::new();
+        // The sidechain layouts are the ones that offer a reference.
+        shared.configure(2, 48_000.0, with_reference);
         shared.loudness.range.store(Some(0.0));
         shared.loudness.plr.store(Some(16.0));
         shared.loudness.max_momentary.store(Some(-22.0));
         shared.loudness.max_short_term.store(Some(-23.0));
+        shared.loudness.integrated.store(Some(-18.0));
+        shared.loudness.momentary.store(Some(-19.0));
+        shared.loudness.short_term.store(Some(-20.0));
+        if with_reference {
+            // A sidechain reference 6 / 4 / 5 LU below the main measurement.
+            shared.reference.momentary.store(Some(-25.0));
+            shared.reference.short_term.store(Some(-24.0));
+            shared.reference.integrated.store(Some(-23.0));
+        }
         // A few history points, so the graph draws a trace instead of the empty state.
         for index in 0..60 {
             shared.history.record(
@@ -1849,11 +1989,38 @@ mod tests {
                         &mut spectrum,
                         Text::new(Lang::English, true),
                         true,
+                        true,
                     );
                 });
             },
         );
         (output, theme)
+    }
+
+    /// The read-out panel rectangle, found through its `INTEGRATED` heading.
+    fn readout_panel(output: &egui::FullOutput, theme: &Theme) -> Rect {
+        let heading = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text() == "INTEGRATED" => {
+                    Some(text.visual_bounding_rect())
+                }
+                _ => None,
+            })
+            .expect("read-out heading");
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(panel)
+                    if panel.fill == theme.panel && panel.rect.contains_rect(heading) =>
+                {
+                    Some(panel.rect)
+                }
+                _ => None,
+            })
+            .expect("readout panel")
     }
 
     /// Asserts that every read-out row and the LRA note fit inside the read-out panel without
@@ -1877,18 +2044,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("{what}: missing {label:?}"))
         };
         let (heading, _) = text("INTEGRATED");
-        let panel = output
-            .shapes
-            .iter()
-            .find_map(|clipped| match &clipped.shape {
-                egui::Shape::Rect(panel)
-                    if panel.fill == theme.panel && panel.rect.contains_rect(heading) =>
-                {
-                    Some(panel.rect)
-                }
-                _ => None,
-            })
-            .expect("readout panel");
+        let panel = readout_panel(output, theme);
+        assert!(panel.contains_rect(heading));
         let mut bottom = heading.bottom();
         for (label, value) in [
             ("LRA", "0.0 LU *"),
@@ -1931,6 +2088,69 @@ mod tests {
         ] {
             let (output, theme) = window_frame(preset, vec2(640.0, 380.0));
             assert_readout_rows_fit(&output, &theme, &format!("{preset:?} at the minimum size"));
+        }
+    }
+
+    #[test]
+    fn the_compare_layout_draws_the_reference_deltas_in_place_of_the_scope() {
+        let (output, theme) = window_frame(LayoutPreset::Compare, vec2(900.0, 560.0));
+        assert_readout_rows_fit(&output, &theme, "Compare");
+        let texts = frame_text(&output);
+        assert!(texts.iter().any(|text| text == "REFERENCE Δ"), "{texts:?}");
+        // Main − reference for M / S / I, in LU.
+        for value in ["+6.0 LU", "+4.0 LU", "+5.0 LU"] {
+            assert!(texts.iter().any(|text| text == value), "{value}: {texts:?}");
+        }
+        // The comparison takes the scope's place, so the figure is not drawn.
+        assert!(!texts.iter().any(|text| text.starts_with("LISSAJOUS")));
+
+        // A narrow but tall window still has room for it above the read-out's minimum.
+        let (output, theme) = window_frame(LayoutPreset::Compare, vec2(640.0, 560.0));
+        assert_readout_rows_fit(&output, &theme, "Compare at 640x560");
+        assert!(frame_text(&output).iter().any(|text| text == "REFERENCE Δ"));
+
+        // At the minimum window size the comparison gives way to the read-out, exactly like
+        // the scope in the Standard layout, and every row stays.
+        let (output, theme) = window_frame(LayoutPreset::Compare, vec2(640.0, 380.0));
+        assert_readout_rows_fit(&output, &theme, "Compare at the minimum size");
+        assert!(!frame_text(&output).iter().any(|text| text == "REFERENCE Δ"));
+    }
+
+    #[test]
+    fn the_reference_tile_says_when_there_is_no_sidechain_input() {
+        let (output, _) =
+            window_frame_with_reference(LayoutPreset::Compare, vec2(900.0, 560.0), false);
+        let texts = frame_text(&output);
+        assert!(texts.iter().any(|text| text == "REFERENCE Δ"), "{texts:?}");
+        assert!(
+            texts.iter().any(|text| text == "no sidechain input"),
+            "{texts:?}"
+        );
+        // No reference means dashes, not zeros.
+        assert_eq!(texts.iter().filter(|text| *text == "-- LU").count(), 3);
+    }
+
+    #[test]
+    fn a_target_without_a_sidechain_offers_no_compare_layout() {
+        assert_eq!(
+            geometry_for(LayoutPreset::Compare, false),
+            shirabe_ui::layout::LayoutPreset::Standard
+        );
+        assert_eq!(
+            geometry_for(LayoutPreset::Compare, true),
+            shirabe_ui::layout::LayoutPreset::Compare
+        );
+        assert_eq!(layout_presets(true).len(), 5);
+        assert_eq!(layout_presets(false).len(), 4);
+        assert!(!layout_presets(false).contains(&LayoutPreset::Compare));
+        // Every other preset keeps its meaning on both targets.
+        for preset in [
+            LayoutPreset::Standard,
+            LayoutPreset::Stereo,
+            LayoutPreset::History,
+            LayoutPreset::Spectrum,
+        ] {
+            assert_eq!(geometry_for(preset, false), preset.geometry());
         }
     }
 

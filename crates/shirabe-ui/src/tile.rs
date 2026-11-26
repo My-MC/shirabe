@@ -24,11 +24,13 @@ pub enum TileId {
     History,
     /// FFT spectrum or 1/3-octave real-time analysis.
     Spectrum,
+    /// Deltas of the main measurement against the sidechain reference.
+    Reference,
 }
 
 impl TileId {
     /// Every tile, in the order the editor draws them.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Peak,
         Self::Level,
         Self::Loudness,
@@ -36,6 +38,7 @@ impl TileId {
         Self::Scope,
         Self::History,
         Self::Spectrum,
+        Self::Reference,
     ];
 
     /// Name used in a saved layout; stable forever.
@@ -48,6 +51,7 @@ impl TileId {
             Self::Scope => "scope",
             Self::History => "history",
             Self::Spectrum => "spectrum",
+            Self::Reference => "reference",
         }
     }
 }

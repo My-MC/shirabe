@@ -25,7 +25,7 @@ fn rig(rate: f32, channels: usize) -> Rig {
     let params = Arc::new(ShirabeParams::default());
     let shared = Arc::new(SharedMeters::new());
     let mut engine = MeterEngine::new(params.clone(), shared.clone());
-    engine.prepare(rate, channels);
+    engine.prepare(rate, channels, 0);
     Rig {
         engine,
         params,
@@ -41,7 +41,7 @@ fn run(rig: &mut Rig, frames: usize) {
         let mut left = vec![0.0f32; n];
         let mut right = vec![0.0f32; n];
         let mut slices: [&mut [f32]; 2] = [&mut left, &mut right];
-        rig.engine.process(&mut slices, false);
+        rig.engine.process(&mut slices, &mut [], false);
         done += n;
     }
 }
@@ -76,7 +76,7 @@ fn pausing_freezes_the_history_while_m_and_s_keep_running() {
         let mut left = chain.clone();
         let mut right = chain.clone();
         let mut slices: [&mut [f32]; 2] = [&mut left, &mut right];
-        rig.engine.process(&mut slices, false);
+        rig.engine.process(&mut slices, &mut [], false);
     }
     let live = rig
         .shared
@@ -116,7 +116,7 @@ fn a_sample_rate_change_clears_the_history() {
     let mut rig = rig(RATE, 2);
     run(&mut rig, 96_000);
     assert!(rig.shared.history.written() > 0);
-    rig.engine.prepare(96_000.0, 2);
+    rig.engine.prepare(96_000.0, 2, 0);
     assert_eq!(rig.shared.history.written(), 0);
     // The new interval follows the new rate: 9600 frames per point at 96 kHz.
     run(&mut rig, 9_600);
@@ -128,7 +128,7 @@ fn a_channel_count_change_clears_the_history() {
     let mut rig = rig(RATE, 2);
     run(&mut rig, 96_000);
     assert!(rig.shared.history.written() > 0);
-    rig.engine.prepare(RATE, 1);
+    rig.engine.prepare(RATE, 1, 0);
     assert_eq!(rig.shared.history.written(), 0);
 }
 
@@ -139,7 +139,7 @@ fn the_capture_does_not_allocate_on_the_audio_thread() {
     let mut right = vec![0.25f32; 4_800];
     assert_no_alloc::assert_no_alloc(|| {
         let mut slices: [&mut [f32]; 2] = [&mut left, &mut right];
-        rig.engine.process(&mut slices, false);
+        rig.engine.process(&mut slices, &mut [], false);
     });
     assert_eq!(rig.shared.history.written(), 1);
     // The automatic reset on transport start also runs inside the guard.
@@ -147,7 +147,7 @@ fn the_capture_does_not_allocate_on_the_audio_thread() {
     let mut right = vec![0.25f32; 512];
     assert_no_alloc::assert_no_alloc(|| {
         let mut slices: [&mut [f32]; 2] = [&mut left, &mut right];
-        rig.engine.process(&mut slices, true);
+        rig.engine.process(&mut slices, &mut [], true);
     });
     assert_eq!(
         rig.shared.history.written(),

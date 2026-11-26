@@ -47,7 +47,11 @@ fn spectrum(ctx: &mut Recorder, _painter: &Painter, rect: Rect) {
     ctx.calls.push((TileId::Spectrum, rect));
 }
 
-fn registry() -> [MeterView<Recorder>; 7] {
+fn reference(ctx: &mut Recorder, _painter: &Painter, rect: Rect) {
+    ctx.calls.push((TileId::Reference, rect));
+}
+
+fn registry() -> [MeterView<Recorder>; 8] {
     [
         MeterView::new(TileId::Peak, peak),
         MeterView::new(TileId::Level, level),
@@ -56,6 +60,7 @@ fn registry() -> [MeterView<Recorder>; 7] {
         MeterView::new(TileId::Scope, scope),
         MeterView::new(TileId::History, history),
         MeterView::new(TileId::Spectrum, spectrum),
+        MeterView::new(TileId::Reference, reference),
     ]
 }
 
@@ -88,7 +93,16 @@ fn tile_ids_are_unique_and_stable() {
     // Saved layout files will refer to these names: renaming one breaks them.
     assert_eq!(
         names,
-        ["peak", "level", "loudness", "readout", "scope", "history", "spectrum"]
+        [
+            "peak",
+            "level",
+            "loudness",
+            "readout",
+            "scope",
+            "history",
+            "spectrum",
+            "reference",
+        ]
     );
     for (index, tile) in TileId::ALL.iter().enumerate() {
         assert_eq!(tile.as_str().parse(), Ok(*tile));
@@ -135,6 +149,7 @@ fn every_tile_of_every_preset_has_a_view() {
         LayoutPreset::Stereo,
         LayoutPreset::History,
         LayoutPreset::Spectrum,
+        LayoutPreset::Compare,
     ] {
         for (w, h) in [
             (900.0, 400.0),

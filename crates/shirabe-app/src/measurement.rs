@@ -789,7 +789,7 @@ mod tests {
         use std::time::Duration;
 
         let shared = SharedMeters::new();
-        shared.configure(2, 48_000.0);
+        shared.configure(2, 48_000.0, false);
         shared.programme_seconds.store(12.3456, Ordering::Relaxed);
         shared.loudness.integrated.store(Some(-23.456));
         shared.loudness.range.store(Some(5.678));
@@ -838,7 +838,7 @@ mod tests {
     #[test]
     fn capture_records_the_history_with_relative_time() {
         let shared = SharedMeters::new();
-        shared.configure(2, 48_000.0);
+        shared.configure(2, 48_000.0, false);
         shared.history.record(4_800, Some(-23.0), Some(-30.0));
         shared.history.record(4_800, None, Some(-31.0));
 
@@ -942,7 +942,7 @@ mod tests {
     #[test]
     fn a_snapshot_does_not_change_when_the_meters_keep_running() {
         let shared = SharedMeters::new();
-        shared.configure(2, 48_000.0);
+        shared.configure(2, 48_000.0, false);
         shared.loudness.integrated.store(Some(-23.0));
         let captured = Snapshot::capture(
             &shared,

@@ -961,6 +961,8 @@ impl eframe::App for App {
                 &mut self.spectrum,
                 text,
                 true,
+                // The standalone application has no sidechain input to compare against.
+                false,
             );
         });
         self.appearance_window(ctx, text);

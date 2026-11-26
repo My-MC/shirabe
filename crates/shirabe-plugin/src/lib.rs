@@ -49,8 +49,12 @@ impl Plugin for Shirabe {
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    // The first layout is the default. Surround layouts are planned for a later release; the
-    // channel roles in `shirabe_dsp::channel` already model them.
+    // The first layout is the default. It and the second entry are the layouts that shipped
+    // before the sidechain existed: they must keep their bus configuration, or every existing
+    // project would be loaded with different inputs. Sidechain-capable layouts are appended.
+    //
+    // Surround layouts are planned for a later release; the channel roles in
+    // `shirabe_dsp::channel` already model them.
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
         AudioIOLayout {
             main_input_channels: NonZeroU32::new(2),
@@ -61,6 +65,28 @@ impl Plugin for Shirabe {
         AudioIOLayout {
             main_input_channels: NonZeroU32::new(1),
             main_output_channels: NonZeroU32::new(1),
+            ..AudioIOLayout::const_default()
+        },
+        // Appended: stereo main bus plus a stereo sidechain (reference) input.
+        AudioIOLayout {
+            main_input_channels: NonZeroU32::new(2),
+            main_output_channels: NonZeroU32::new(2),
+            aux_input_ports: &[new_nonzero_u32(2)],
+            names: PortNames {
+                aux_inputs: &["Reference"],
+                ..PortNames::const_default()
+            },
+            ..AudioIOLayout::const_default()
+        },
+        // Appended: mono main bus plus a mono sidechain input.
+        AudioIOLayout {
+            main_input_channels: NonZeroU32::new(1),
+            main_output_channels: NonZeroU32::new(1),
+            aux_input_ports: &[new_nonzero_u32(1)],
+            names: PortNames {
+                aux_inputs: &["Reference"],
+                ..PortNames::const_default()
+            },
             ..AudioIOLayout::const_default()
         },
     ];
@@ -88,7 +114,12 @@ impl Plugin for Shirabe {
             .main_input_channels
             .map_or(0, |c| c.get() as usize)
             .min(MAX_CHANNELS);
-        self.engine.prepare(buffer_config.sample_rate, channels);
+        let reference_channels = audio_io_layout
+            .aux_input_ports
+            .first()
+            .map_or(0, |c| c.get() as usize);
+        self.engine
+            .prepare(buffer_config.sample_rate, channels, reference_channels);
         true
     }
 
@@ -99,11 +130,18 @@ impl Plugin for Shirabe {
     fn process(
         &mut self,
         buffer: &mut Buffer,
-        _aux: &mut AuxiliaryBuffers,
+        aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         let playing = context.transport().playing;
-        self.engine.process(buffer.as_slice(), playing);
+        // The sidechain is measured by the engine and never written, so the main bus stays the
+        // only path to the output. An empty slice means this layout has no auxiliary input.
+        let mut none: [&mut [f32]; 0] = [];
+        let reference: &mut [&mut [f32]] = match aux.inputs.first_mut() {
+            Some(reference) => reference.as_slice(),
+            None => &mut none[..],
+        };
+        self.engine.process(buffer.as_slice(), reference, playing);
         ProcessStatus::Normal
     }
 }

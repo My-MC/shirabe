@@ -30,6 +30,8 @@ pub const MIN_LOUDNESS_HEIGHT: f32 = 110.0;
 pub const MIN_HISTORY_HEIGHT: f32 = 96.0;
 /// Smallest readable height of the spectrum tile.
 pub const MIN_SPECTRUM_HEIGHT: f32 = 120.0;
+/// Smallest readable height of the reference comparison: a heading and three rows.
+pub const MIN_REFERENCE_HEIGHT: f32 = 96.0;
 /// Share of the meter area the history graph takes when the window has room for it.
 const HISTORY_GRAPH_SHARE: f32 = 0.34;
 /// Largest height the history graph takes, so a tall window still shows the meters.
@@ -54,6 +56,8 @@ pub enum LayoutPreset {
     History,
     /// The Standard meters with a full-width FFT / 1/3-octave spectrum along the bottom.
     Spectrum,
+    /// The Standard meters with the reference comparison where the scope sits.
+    Compare,
 }
 
 /// One tile with the rectangle it occupies.
@@ -74,6 +78,11 @@ pub struct Arrangement {
 impl Arrangement {
     fn place(&mut self, tile: TileId, rect: Rect) {
         self.placements.push(Placement { tile, rect });
+    }
+
+    /// Drops `tile` from the arrangement, if it is placed.
+    fn remove(&mut self, tile: TileId) {
+        self.placements.retain(|placement| placement.tile != tile);
     }
 
     /// All placed tiles.
@@ -97,6 +106,7 @@ pub fn arrange(preset: LayoutPreset, rect: Rect) -> Arrangement {
         LayoutPreset::Stereo => stereo(rect),
         LayoutPreset::History => history(rect),
         LayoutPreset::Spectrum => spectrum(rect),
+        LayoutPreset::Compare => compare(rect),
     }
 }
 
@@ -193,6 +203,24 @@ fn stereo(rect: Rect) -> Arrangement {
     } else {
         arrangement.place(TileId::Readout, column);
     }
+    arrangement
+}
+
+/// The Standard meters with the reference comparison in the scope's place.
+///
+/// The meter columns and the read-out keep the Standard geometry, so the numbers do not move
+/// when the view is selected. A column too short for both keeps the read-out and drops the
+/// comparison, exactly like the scope in the Standard preset.
+fn compare(rect: Rect) -> Arrangement {
+    let mut arrangement = standard(rect);
+    let Some(scope) = arrangement.tile(TileId::Scope) else {
+        return arrangement;
+    };
+    if scope.height() < MIN_REFERENCE_HEIGHT {
+        return arrangement;
+    }
+    arrangement.remove(TileId::Scope);
+    arrangement.place(TileId::Reference, scope);
     arrangement
 }
 

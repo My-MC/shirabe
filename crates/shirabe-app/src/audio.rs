@@ -196,7 +196,7 @@ impl Pump {
     /// audio callback.
     pub fn new(mut engine: MeterEngine, rate: f32, channels: usize) -> Self {
         let channels = channels.clamp(1, 2);
-        engine.prepare(rate, channels);
+        engine.prepare(rate, channels, 0);
         engine.reset();
         Self {
             engine,
@@ -208,12 +208,13 @@ impl Pump {
     }
 
     fn run(&mut self, n: usize, playing: bool) {
+        // The standalone application has no sidechain input, so the reference stays unavailable.
         if self.channels > 1 {
             let mut slices: [&mut [f32]; 2] = [&mut self.left[..n], &mut self.right[..n]];
-            self.engine.process(&mut slices, playing);
+            self.engine.process(&mut slices, &mut [], playing);
         } else {
             let mut slices: [&mut [f32]; 1] = [&mut self.left[..n]];
-            self.engine.process(&mut slices, playing);
+            self.engine.process(&mut slices, &mut [], playing);
         }
     }
 

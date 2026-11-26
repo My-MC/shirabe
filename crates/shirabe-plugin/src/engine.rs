@@ -33,6 +33,9 @@ pub struct MeterEngine {
     ppm_type_ii: Vec<PpmMeter>,
     level_mode: LevelMode,
     loudness: LoudnessMeter,
+    /// Independent loudness measurement of the sidechain reference. `None` while the host's
+    /// layout has no auxiliary input, so the plug-in pays nothing for a feature it cannot use.
+    reference: Option<LoudnessMeter>,
     /// Correlation and balance of the stereo input; fed only while both channels are present.
     stereo: StereoStatistics,
     stereo_active: bool,
@@ -67,6 +70,7 @@ impl MeterEngine {
                 .collect(),
             level_mode: LevelMode::Vu,
             loudness: LoudnessMeter::new(sr, ChannelLayout::Stereo.roles()),
+            reference: None,
             stereo: StereoStatistics::new(sr),
             stereo_active: false,
             spectrum_scratch: [0.0; SPECTRUM_BLOCK],
@@ -87,9 +91,12 @@ impl MeterEngine {
         &self.shared
     }
 
-    /// Prepares every meter for a sample rate and channel count. Allocates; call it outside
-    /// the audio callback.
-    pub fn prepare(&mut self, sample_rate: f32, channels: usize) {
+    /// Prepares every meter for a sample rate, a channel count and a sidechain channel count.
+    /// Allocates; call it outside the audio callback.
+    ///
+    /// A non-zero `reference_channels` creates the independent reference meter; zero leaves it
+    /// out, so a layout without an auxiliary input costs nothing extra.
+    pub fn prepare(&mut self, sample_rate: f32, channels: usize, reference_channels: usize) {
         let channels = channels.min(MAX_CHANNELS);
         self.sample_rate = sample_rate;
         for meter in &mut self.peak {
@@ -106,12 +113,19 @@ impl MeterEngine {
         }
         let layout = ChannelLayout::from_channel_count(channels).unwrap_or(ChannelLayout::Stereo);
         self.loudness.prepare(sample_rate, layout.roles());
+        self.reference = (reference_channels > 0).then(|| {
+            let roles = ChannelLayout::from_channel_count(reference_channels)
+                .unwrap_or(ChannelLayout::Stereo)
+                .roles();
+            LoudnessMeter::new(sample_rate, roles)
+        });
         self.stereo.prepare(sample_rate);
         self.stereo_active = false;
         self.spectrum_channels = 0;
         self.programme_peak = MINUS_INFINITY_DB;
         self.osc.reset();
-        self.shared.configure(channels, sample_rate);
+        self.shared
+            .configure(channels, sample_rate, self.reference.is_some());
     }
 
     /// Returns every meter to rest and clears the read-outs.
@@ -129,6 +143,9 @@ impl MeterEngine {
             meter.reset();
         }
         self.loudness.reset();
+        if let Some(reference) = &mut self.reference {
+            reference.reset();
+        }
         self.stereo.reset();
         self.stereo_active = false;
         self.spectrum_channels = 0;
@@ -147,6 +164,10 @@ impl MeterEngine {
         }
         self.programme_peak = MINUS_INFINITY_DB;
         self.loudness.reset_programme();
+        // The comparison is part of the programme display, so it starts over with it.
+        if let Some(reference) = &mut self.reference {
+            reference.reset_programme();
+        }
         // The graph records the programme, so it starts over with it.
         self.shared.history.clear();
         // The spectrum is display-only but shows the same programme, so Reset clears it too.
@@ -155,8 +176,14 @@ impl MeterEngine {
 
     /// Measures one block. `channels` holds one slice per channel, all of the same length.
     /// When the test oscillator is on, the channels are overwritten with the test tone first.
-    /// `playing` is the host transport state (used for the reset-on-play option).
-    pub fn process(&mut self, channels: &mut [&mut [f32]], playing: bool) {
+    /// `reference` holds the sidechain channels; it is read only and never mixed into the
+    /// output. `playing` is the host transport state (used for the reset-on-play option).
+    pub fn process(
+        &mut self,
+        channels: &mut [&mut [f32]],
+        reference: &mut [&mut [f32]],
+        playing: bool,
+    ) {
         let _denormals = DenormalGuard::new();
         let frames = channels.first().map_or(0, |channel| channel.len());
         let transport_started = playing && !self.was_playing;
@@ -288,6 +315,23 @@ impl MeterEngine {
             .store(self.loudness.programme_seconds() as f32, Ordering::Relaxed);
         let loudness = self.loudness.readout();
         self.shared.loudness.store(&loudness);
+
+        // The reference is a second, independent measurement with the same windows and gating.
+        // It shares the transport, so Pause and Reset act on both programmes together.
+        if let Some(reference_meter) = &mut self.reference {
+            reference_meter.set_integrating(integrating);
+            let reference_frames = reference.first().map_or(0, |channel| channel.len());
+            // The host fills an unconnected sidechain with silence; only a buffer of the
+            // expected length and uniform channel lengths is processed.
+            if reference_frames > 0
+                && reference
+                    .iter()
+                    .all(|channel| channel.len() == reference_frames)
+            {
+                reference_meter.process(&*reference);
+            }
+            self.shared.reference.store(&reference_meter.readout());
+        }
         // The graph records the programme measurement: it advances only while that measurement
         // runs, so it freezes with Pause and starts over with Reset.
         if integrating {

@@ -7,14 +7,14 @@ fn feed(engine: &mut MeterEngine, peak_db: f32) {
     let mut signal: Vec<_> = (0..48_000)
         .map(|i| gain * (std::f32::consts::TAU * (i % 48) as f32 / 48.0).sin())
         .collect();
-    engine.process(&mut [&mut signal], false);
+    engine.process(&mut [&mut signal], &mut [], false);
 }
 
 #[test]
 fn plr_uses_the_programme_peak_and_waits_for_integrated_loudness() {
     let shared = Arc::new(SharedMeters::new());
     let mut engine = MeterEngine::new(Arc::new(ShirabeParams::default()), shared.clone());
-    engine.prepare(48_000.0, 1);
+    engine.prepare(48_000.0, 1, 0);
     assert_eq!(shared.loudness.plr.load(), None);
 
     feed(&mut engine, -18.0);
@@ -32,7 +32,7 @@ fn plr_uses_the_programme_peak_and_waits_for_integrated_loudness() {
 
     shared.request_reset();
     let mut silence = [0.0; 480];
-    engine.process(&mut [&mut silence], false);
+    engine.process(&mut [&mut silence], &mut [], false);
     assert_eq!(shared.loudness.plr.load(), None);
     feed(&mut engine, -24.0);
     assert!((shared.loudness.plr.load().unwrap() - plr).abs() < 0.1);
