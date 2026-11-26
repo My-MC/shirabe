@@ -8,6 +8,9 @@ use std::sync::Arc;
 use nih_plug::prelude::*;
 use nih_plug_egui::EguiState;
 
+/// Initial value of the custom target in LUFS.
+const CUSTOM_DEFAULT_LOUDNESS: f32 = -14.0;
+
 /// Loudness targets. Variant IDs are stored in projects: never change them. Values and their
 /// sources are listed in `docs/standards.md`.
 #[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +38,32 @@ pub enum LoudnessTarget {
     #[id = "applepod"]
     #[name = "Apple Podcasts (-16 LKFS)"]
     ApplePodcasts,
+    /// User-defined target, true-peak ceiling and tolerance (the `ld_c_*` parameters). Not
+    /// taken from any document: for services that publish no target.
+    #[id = "custom"]
+    #[name = "Custom"]
+    Custom,
+}
+
+/// A loudness target with its tolerance and true-peak ceiling, resolved from the preset or the
+/// custom parameters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TargetSpec {
+    /// The preset.
+    pub preset: LoudnessTarget,
+    /// Target integrated loudness in LUFS.
+    pub loudness: f32,
+    /// Permitted tolerance in LU, if any.
+    pub tolerance: Option<f32>,
+    /// Maximum true-peak level in dBTP.
+    pub true_peak_ceiling: f32,
+}
+
+impl TargetSpec {
+    /// Unit name used by the document for absolute loudness values.
+    pub fn unit(&self) -> &'static str {
+        self.preset.unit()
+    }
 }
 
 impl LoudnessTarget {
@@ -45,6 +74,7 @@ impl LoudnessTarget {
             Self::EbuR128 => -23.0,
             Self::Streaming14 => -14.0,
             Self::ApplePodcasts => -16.0,
+            Self::Custom => CUSTOM_DEFAULT_LOUDNESS,
         }
     }
 
@@ -61,7 +91,7 @@ impl LoudnessTarget {
         match self {
             Self::AribTrB32 | Self::EbuR128 | Self::ApplePodcasts => Some(1.0),
             Self::AtscA85 => Some(2.0),
-            Self::Streaming14 => None,
+            Self::Streaming14 | Self::Custom => None,
         }
     }
 
@@ -69,7 +99,7 @@ impl LoudnessTarget {
     pub fn unit(self) -> &'static str {
         match self {
             Self::AribTrB32 | Self::AtscA85 | Self::ApplePodcasts => "LKFS",
-            Self::EbuR128 | Self::Streaming14 => "LUFS",
+            Self::EbuR128 | Self::Streaming14 | Self::Custom => "LUFS",
         }
     }
 }
@@ -157,6 +187,18 @@ pub struct ShirabeParams {
     #[id = "ld_tgt"]
     pub loudness_target: EnumParam<LoudnessTarget>,
 
+    /// Custom target loudness in LUFS (used with `LoudnessTarget::Custom`).
+    #[id = "ld_c_lvl"]
+    pub custom_loudness: FloatParam,
+
+    /// Custom tolerance in LU; 0 means no tolerance.
+    #[id = "ld_c_tol"]
+    pub custom_tolerance: FloatParam,
+
+    /// Custom true-peak ceiling in dBTP.
+    #[id = "ld_c_tp"]
+    pub custom_true_peak: FloatParam,
+
     /// Loudness scale.
     #[id = "ld_scale"]
     pub loudness_scale: EnumParam<LoudnessScale>,
@@ -215,11 +257,94 @@ impl Default for ShirabeParams {
 
             loudness_target: EnumParam::new("Loudness Target", LoudnessTarget::AribTrB32),
 
+            custom_loudness: FloatParam::new(
+                "Custom Target",
+                CUSTOM_DEFAULT_LOUDNESS,
+                FloatRange::Linear {
+                    min: -40.0,
+                    max: -5.0,
+                },
+            )
+            .with_step_size(0.5)
+            .with_unit(" LUFS"),
+
+            custom_tolerance: FloatParam::new(
+                "Custom Tolerance",
+                0.0,
+                FloatRange::Linear { min: 0.0, max: 5.0 },
+            )
+            .with_step_size(0.5)
+            .with_value_to_string(Arc::new(|v| {
+                if v <= 0.0 {
+                    "none".to_owned()
+                } else {
+                    format!("±{v:.1} LU")
+                }
+            })),
+
+            custom_true_peak: FloatParam::new(
+                "Custom True-Peak Ceiling",
+                -1.0,
+                FloatRange::Linear {
+                    min: -10.0,
+                    max: 0.0,
+                },
+            )
+            .with_step_size(0.5)
+            .with_unit(" dBTP"),
+
             loudness_scale: EnumParam::new("Loudness Scale", LoudnessScale::Ebu9),
 
             loudness_unit: EnumParam::new("Loudness Unit", LoudnessUnit::Absolute),
 
             auto_reset: BoolParam::new("Reset on Play", true),
         }
+    }
+}
+
+impl ShirabeParams {
+    /// The selected target, with the custom values applied when `Custom` is selected.
+    pub fn target_spec(&self) -> TargetSpec {
+        let preset = self.loudness_target.value();
+        if preset == LoudnessTarget::Custom {
+            let tol = self.custom_tolerance.value();
+            TargetSpec {
+                preset,
+                loudness: self.custom_loudness.value(),
+                tolerance: (tol > 0.0).then_some(tol),
+                true_peak_ceiling: self.custom_true_peak.value(),
+            }
+        } else {
+            TargetSpec {
+                preset,
+                loudness: preset.loudness(),
+                tolerance: preset.tolerance(),
+                true_peak_ceiling: preset.true_peak_ceiling(),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn presets_resolve_to_their_documented_values() {
+        let params = ShirabeParams::default();
+        let spec = params.target_spec();
+        assert_eq!(spec.preset, LoudnessTarget::AribTrB32);
+        assert_eq!(spec.loudness, -24.0);
+        assert_eq!(spec.tolerance, Some(1.0));
+        assert_eq!(spec.true_peak_ceiling, -1.0);
+    }
+
+    #[test]
+    fn custom_defaults() {
+        let params = ShirabeParams::default();
+        assert_eq!(params.custom_loudness.value(), -14.0);
+        assert_eq!(params.custom_tolerance.value(), 0.0);
+        assert_eq!(params.custom_true_peak.value(), -1.0);
+        assert_eq!(params.custom_tolerance.to_string(), "none");
     }
 }

@@ -18,7 +18,9 @@ use shirabe_ui::{
     draw_level_bar, draw_marker, draw_scale_labels, format_db, format_lufs, MeterScale, Theme, Zone,
 };
 
-use crate::params::{LevelMode, LoudnessScale, LoudnessTarget, LoudnessUnit, ShirabeParams};
+use crate::params::{
+    LevelMode, LoudnessScale, LoudnessTarget, LoudnessUnit, ShirabeParams, TargetSpec,
+};
 use crate::shared::SharedMeters;
 
 const SCALE_WIDTH: f32 = 30.0;
@@ -28,6 +30,8 @@ const TITLE_HEIGHT: f32 = 16.0;
 const MAX_BAR_WIDTH: f32 = 34.0;
 const BAR_GAP: f32 = 5.0;
 const CONTROLS_HEIGHT: f32 = 92.0;
+/// Extra height of the custom-target row.
+const CUSTOM_ROW_HEIGHT: f32 = 24.0;
 const SECTION_GAP: f32 = 14.0;
 const LOUDNESS_PANEL_WIDTH: f32 = 160.0;
 
@@ -65,7 +69,13 @@ pub(crate) fn create(
                             header(ui, &shared, theme);
                             ui.separator();
 
-                            let height = (ui.available_height() - CONTROLS_HEIGHT).max(120.0);
+                            let controls =
+                                if params.loudness_target.value() == LoudnessTarget::Custom {
+                                    CONTROLS_HEIGHT + CUSTOM_ROW_HEIGHT
+                                } else {
+                                    CONTROLS_HEIGHT
+                                };
+                            let height = (ui.available_height() - controls).max(120.0);
                             meters(ui, &params, &shared, theme, height);
 
                             ui.separator();
@@ -264,7 +274,7 @@ fn meters(
     let channels = shared
         .active_channels()
         .clamp(1, crate::shared::MAX_CHANNELS);
-    let target = params.loudness_target.value();
+    let target = params.target_spec();
 
     // The numeric loudness panel has a fixed width; the bar sections share the rest.
     let meters_width = (rect.width() - LOUDNESS_PANEL_WIDTH - 3.0 * SECTION_GAP).max(0.0);
@@ -310,12 +320,12 @@ fn peak_section(
     shared: &SharedMeters,
     theme: &Theme,
     channels: usize,
-    target: LoudnessTarget,
+    target: TargetSpec,
 ) {
     let scale = MeterScale::PEAK_DBFS;
     let group = BarGroup::new(rect, channels);
     group.draw_frame(painter, "PEAK dBFS / TP dBTP", &scale, theme, 0.0);
-    let ceiling = target.true_peak_ceiling();
+    let ceiling = target.true_peak_ceiling;
     for index in 0..channels {
         let bar = group.bar(index);
         let r = shared.channel(index);
@@ -487,7 +497,7 @@ fn level_section(
 
 /// Loudness display settings resolved from the parameters.
 struct LoudnessView {
-    target: LoudnessTarget,
+    target: TargetSpec,
     scale: MeterScale,
     scale_name: &'static str,
     relative: bool,
@@ -500,7 +510,7 @@ impl LoudnessView {
             LoudnessScale::Ebu18 => (MeterScale::LOUDNESS_EBU_18, "+18"),
         };
         Self {
-            target: params.loudness_target.value(),
+            target: params.target_spec(),
             scale,
             scale_name,
             relative: params.loudness_unit.value() == LoudnessUnit::Relative,
@@ -520,7 +530,7 @@ impl LoudnessView {
     fn display(&self, lufs: Option<f32>) -> Option<f32> {
         lufs.map(|v| {
             if self.relative && v.is_finite() {
-                v - self.target.loudness()
+                v - self.target.loudness
             } else {
                 v
             }
@@ -530,12 +540,12 @@ impl LoudnessView {
     /// Position on the scale (always relative to the target, so the target mark stays put).
     fn scale_value(&self, lufs: Option<f32>) -> f32 {
         lufs.filter(|v| v.is_finite())
-            .map_or(MINUS_INFINITY_DB, |v| v - self.target.loudness())
+            .map_or(MINUS_INFINITY_DB, |v| v - self.target.loudness)
     }
 
     fn colour(&self, theme: &Theme, lufs: Option<f32>) -> Color32 {
-        let t = self.target.loudness();
-        match (lufs, self.target.tolerance()) {
+        let t = self.target.loudness;
+        match (lufs, self.target.tolerance) {
             (Some(v), Some(tol)) if v > t + tol => theme.over,
             (Some(v), Some(tol)) if v >= t - tol => theme.on_target,
             _ => theme.text,
@@ -543,7 +553,7 @@ impl LoudnessView {
     }
 
     fn zones(&self, theme: &Theme) -> [Zone; 3] {
-        let tol = self.target.tolerance().unwrap_or(0.0);
+        let tol = self.target.tolerance.unwrap_or(0.0);
         [
             Zone {
                 from_db: f32::NEG_INFINITY,
@@ -565,12 +575,13 @@ impl LoudnessView {
 
     /// Name of the operating mode shown with the loudness section.
     fn mode_name(&self) -> &'static str {
-        match self.target {
+        match self.target.preset {
             LoudnessTarget::EbuR128 => "EBU Mode",
             LoudnessTarget::AribTrB32 => "TR-B32",
             LoudnessTarget::AtscA85 => "A/85",
             LoudnessTarget::Streaming14 => "Spotify",
             LoudnessTarget::ApplePodcasts => "Apple Podcasts",
+            LoudnessTarget::Custom => "Custom",
         }
     }
 }
@@ -586,7 +597,7 @@ fn loudness_section(
     let label_offset = if view.relative {
         0.0
     } else {
-        view.target.loudness()
+        view.target.loudness
     };
     let title = format!("{} {}  {}", view.mode_name(), view.scale_name, view.unit());
     group.draw_frame(painter, &title, &view.scale, theme, label_offset);
@@ -682,7 +693,7 @@ fn loudness_panel(
     } else {
         theme.text
     };
-    let ceiling = view.target.true_peak_ceiling();
+    let ceiling = view.target.true_peak_ceiling;
     let rows: [(&str, String, Color32); 6] = [
         ("LRA", lra_text, lra_colour),
         (
@@ -717,9 +728,18 @@ fn loudness_panel(
         ),
         (
             "Target",
-            match view.target.tolerance() {
-                Some(tol) => format!("{:.0} ±{tol:.0} / {ceiling:.0}", view.target.loudness()),
-                None => format!("{:.0} / {ceiling:.0}", view.target.loudness()),
+            match view.target.tolerance {
+                Some(tol) => format!(
+                    "{} ±{} / {}",
+                    short_number(view.target.loudness),
+                    short_number(tol),
+                    short_number(ceiling)
+                ),
+                None => format!(
+                    "{} / {}",
+                    short_number(view.target.loudness),
+                    short_number(ceiling)
+                ),
             },
             theme.text_dim,
         ),
@@ -794,6 +814,7 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
                 LoudnessTarget::AtscA85,
                 LoudnessTarget::Streaming14,
                 LoudnessTarget::ApplePodcasts,
+                LoudnessTarget::Custom,
             ],
             target_name,
         );
@@ -831,6 +852,25 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
             setter.end_set_parameter(&params.auto_reset);
         }
     });
+    if params.loudness_target.value() == LoudnessTarget::Custom {
+        ui.horizontal(|ui| {
+            ui.label("Custom");
+            ui.add(
+                widgets::ParamSlider::for_param(&params.custom_loudness, setter).with_width(110.0),
+            )
+            .on_hover_text("Target integrated loudness");
+            ui.label("±");
+            ui.add(
+                widgets::ParamSlider::for_param(&params.custom_tolerance, setter).with_width(90.0),
+            )
+            .on_hover_text("Tolerance around the target (none = no tolerance)");
+            ui.label("TP ≤");
+            ui.add(
+                widgets::ParamSlider::for_param(&params.custom_true_peak, setter).with_width(100.0),
+            )
+            .on_hover_text("True-peak ceiling");
+        });
+    }
     ui.horizontal(|ui| {
         ui.label("Level");
         combo(
@@ -871,6 +911,7 @@ fn target_name(t: LoudnessTarget) -> &'static str {
         LoudnessTarget::AtscA85 => "ATSC A/85  -24 LKFS",
         LoudnessTarget::Streaming14 => "Spotify  -14 LUFS",
         LoudnessTarget::ApplePodcasts => "Apple Podcasts  -16 LKFS",
+        LoudnessTarget::Custom => "Custom",
     }
 }
 
@@ -898,6 +939,15 @@ fn oscillator_controls(
             ui.label(RichText::new("Pass-through, no latency").color(theme.text_dim));
         }
     });
+}
+
+/// Formats a number without a trailing `.0` (`-14`, `-14.5`).
+fn short_number(v: f32) -> String {
+    if (v - v.round()).abs() < 0.05 {
+        format!("{:.0}", v)
+    } else {
+        format!("{:.1}", v)
+    }
 }
 
 #[cfg(test)]
