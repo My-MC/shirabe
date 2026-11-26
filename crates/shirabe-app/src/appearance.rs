@@ -30,6 +30,59 @@ pub const MAX_BYTES: u64 = 64 * 1024;
 /// Most colour zones accepted in one list.
 pub const MAX_ZONES: usize = 32;
 
+/// UI-only path and one-use overwrite authorization.
+pub struct Target {
+    typed: String,
+    pending: Option<String>,
+    revision: u64,
+}
+
+impl Target {
+    pub fn new(typed: String) -> Self {
+        Self {
+            typed,
+            pending: None,
+            revision: 0,
+        }
+    }
+
+    pub fn path(&self) -> &str {
+        &self.typed
+    }
+
+    pub fn pending(&self) -> Option<&str> {
+        self.pending.as_deref()
+    }
+
+    pub fn set_path(&mut self, path: String) {
+        self.typed = path;
+        self.invalidate();
+    }
+
+    pub fn invalidate(&mut self) {
+        self.pending = None;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    pub fn begin(&mut self, overwrite: bool) -> Option<(String, u64)> {
+        let authorized = self.pending() == Some(self.path());
+        self.invalidate();
+        if self.typed.trim().is_empty() || (overwrite && !authorized) {
+            return None;
+        }
+        Some((self.typed.clone(), self.revision))
+    }
+
+    /// Only the still-current request can offer confirmation after a collision.
+    pub fn offer_overwrite(&mut self, path: &str, revision: u64) -> bool {
+        if self.revision != revision || self.path() != path {
+            return false;
+        }
+        self.pending = Some(path.to_owned());
+        true
+    }
+}
+
 /// A validated appearance: the layout and the theme it applies.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Appearance {
@@ -69,8 +122,39 @@ pub struct ThemeSpec {
     pub over: ColorSpec,
     /// Peak-meter zones, sorted by ascending `from_db`.
     pub zones: Vec<ZoneSpec>,
-    /// VU-meter zones, sorted by ascending `from_db`.
-    pub vu_zones: Vec<ZoneSpec>,
+    /// Two VU/PPM bar colours; their boundary is set by the meter, not the file.
+    pub level_bar: LevelBarSpec,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LevelBarSpec {
+    normal: SegmentSpec,
+    over: SegmentSpec,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SegmentSpec {
+    lit: ColorSpec,
+    unlit: ColorSpec,
+}
+
+impl SegmentSpec {
+    fn from_zone(zone: &Zone) -> Self {
+        Self {
+            lit: color_to_hex(zone.lit),
+            unlit: color_to_hex(zone.unlit),
+        }
+    }
+
+    fn to_zone(&self, field: &str, from_db: f32) -> Result<Zone, Error> {
+        Ok(Zone {
+            from_db,
+            lit: parse_color(&self.lit, &format!("level_bar.{field}.lit"))?,
+            unlit: parse_color(&self.unlit, &format!("level_bar.{field}.unlit"))?,
+        })
+    }
 }
 
 /// One colour zone as stored in a preset file.
@@ -101,7 +185,10 @@ impl ThemeSpec {
             on_target: color_to_hex(theme.on_target),
             over: color_to_hex(theme.over),
             zones: theme.zones.iter().map(zone_spec).collect(),
-            vu_zones: theme.vu_zones.iter().map(zone_spec).collect(),
+            level_bar: LevelBarSpec {
+                normal: SegmentSpec::from_zone(&theme.vu_zones[0]),
+                over: SegmentSpec::from_zone(&theme.vu_zones[theme.vu_zones.len() - 1]),
+            },
         }
     }
 
@@ -120,7 +207,10 @@ impl ThemeSpec {
             on_target: parse_color(&self.on_target, "on_target")?,
             over: parse_color(&self.over, "over")?,
             zones: parse_zones(&self.zones, "zones")?,
-            vu_zones: parse_zones(&self.vu_zones, "vu_zones")?,
+            vu_zones: vec![
+                self.level_bar.normal.to_zone("normal", f32::NEG_INFINITY)?,
+                self.level_bar.over.to_zone("over", 0.0)?,
+            ],
             segment_height: base.segment_height,
             segment_gap: base.segment_gap,
         })
@@ -129,12 +219,14 @@ impl ThemeSpec {
 
 /// Parses `#rrggbb`; alpha and named colours are not part of the schema.
 fn parse_color(text: &str, field: &str) -> Result<Color32, Error> {
-    let hex = text.strip_prefix('#').unwrap_or(text);
-    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+    let Some(hex) = text
+        .strip_prefix('#')
+        .filter(|hex| hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+    else {
         return Err(Error::InvalidTheme(format!(
             "{field} must be #rrggbb, got {text:?}"
         )));
-    }
+    };
     let channel = |range: std::ops::Range<usize>| {
         // The range is inside an ASCII hex string checked above.
         u8::from_str_radix(&hex[range], 16).expect("checked hexadecimal")
@@ -298,8 +390,8 @@ fn require_regular_file(metadata: &fs::Metadata) -> io::Result<()> {
 
 /// Reads and validates an appearance file.
 pub fn load(path: &Path) -> Result<Appearance, Error> {
-    // Check before opening so a FIFO already at this path cannot block the UI.
-    // This is not a guarantee against concurrent changes to the path.
+    // Reject stable special files and leaf symlinks before opening. Concurrent
+    // changes between the check and open can still block the worker.
     require_regular_file(&fs::symlink_metadata(path)?)?;
     let file = File::open(path)?;
     require_regular_file(&file.metadata()?)?;
@@ -327,21 +419,7 @@ pub fn parse(bytes: &[u8]) -> Result<Appearance, Error> {
     Ok(Appearance { layout, theme })
 }
 
-/// Loads `path` and applies its layout; returns the validated appearance for the
-/// caller to apply the theme.
-///
-/// Nothing is changed when the file is missing, too large, or invalid.
-pub fn import(
-    path: &Path,
-    params: &ShirabeParams,
-    setter: &ParamSetter,
-) -> Result<Appearance, Error> {
-    let appearance = load(path)?;
-    apply(&appearance, params, setter);
-    Ok(appearance)
-}
-
-/// Applies the layout of a validated appearance.
+/// Applies the layout of a validated appearance on the UI thread.
 pub fn apply(appearance: &Appearance, params: &ShirabeParams, setter: &ParamSetter) {
     setter.begin_set_parameter(&params.layout_preset);
     setter.set_parameter(&params.layout_preset, appearance.layout);
@@ -417,7 +495,7 @@ impl From<io::Error> for Error {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -426,7 +504,7 @@ mod tests {
 
     use crate::context::{load_params, save_params, StandaloneContext};
 
-    struct TestDir(PathBuf);
+    pub(crate) struct TestDir(PathBuf);
 
     impl std::ops::Deref for TestDir {
         type Target = Path;
@@ -442,7 +520,7 @@ mod tests {
         }
     }
 
-    fn temp_dir(tag: &str) -> TestDir {
+    pub(crate) fn temp_dir(tag: &str) -> TestDir {
         let base = std::env::temp_dir();
         for serial in 0.. {
             let dir = base.join(format!(
@@ -596,6 +674,42 @@ mod tests {
     }
 
     #[test]
+    fn hex_colours_require_the_hash_prefix() {
+        assert!(matches!(
+            parse_color("121417", "background"),
+            Err(Error::InvalidTheme(_))
+        ));
+        assert_eq!(
+            parse_color("#aBcD12", "background").unwrap(),
+            Color32::from_rgb(0xab, 0xcd, 0x12)
+        );
+    }
+
+    #[test]
+    fn level_bar_palette_exposes_two_colour_pairs_without_thresholds() {
+        let theme = ThemeSpec::from_theme(&Theme::dark());
+        let mut theme = serde_json::to_value(theme).unwrap();
+        assert!(theme.get("vu_zones").is_none());
+        assert_eq!(theme["level_bar"]["normal"]["lit"], "#e8d8a8");
+        assert_eq!(theme["level_bar"]["over"]["unlit"], "#361614");
+        theme["level_bar"]["normal"]["lit"] = serde_json::json!("#123456");
+        theme["level_bar"]["over"]["unlit"] = serde_json::json!("#abcdef");
+        let raw = |theme| serde_json::json!({"format": FORMAT, "version": VERSION, "layout": "standard", "theme": theme});
+        let back = parse(raw(theme.clone()).to_string().as_bytes())
+            .unwrap()
+            .theme;
+        assert_eq!(back.vu_zones[0].lit, Color32::from_rgb(0x12, 0x34, 0x56));
+        assert_eq!(back.vu_zones[1].unlit, Color32::from_rgb(0xab, 0xcd, 0xef));
+        assert_eq!(back.vu_zones[1].from_db, 0.0);
+        assert_eq!(back.over, Theme::dark().over);
+        theme["level_bar"]["over"]["from_db"] = serde_json::json!(-10);
+        assert!(matches!(
+            parse(raw(theme).to_string().as_bytes()),
+            Err(Error::Json(_))
+        ));
+    }
+
+    #[test]
     fn zone_lists_must_be_non_empty_and_sorted() {
         let dir = temp_dir("zones");
 
@@ -653,6 +767,39 @@ mod tests {
 
         save(&stereo_appearance(), &path, true).unwrap();
         assert_eq!(load(&path).unwrap(), stereo_appearance());
+    }
+
+    #[test]
+    fn overwrite_requires_fresh_authorization_for_the_exact_visible_path() {
+        let mut target = Target::new("first.json".into());
+        assert!(target.begin(true).is_none());
+        let (first, revision) = target.begin(false).unwrap();
+        assert!(target.offer_overwrite(&first, revision));
+        target.set_path("first.json ".into());
+        target.set_path(first.clone());
+        assert!(target.begin(true).is_none());
+
+        let (_, revision) = target.begin(false).unwrap();
+        assert!(target.offer_overwrite(&first, revision));
+        // Starting another action invalidates confirmation, even if it fails.
+        let (invalid_import, _) = target.begin(false).unwrap();
+        let dir = temp_dir("invalid-action");
+        assert!(load(&dir.join(invalid_import)).is_err());
+        assert!(target.begin(true).is_none());
+
+        let (_, revision) = target.begin(false).unwrap();
+        assert!(target.offer_overwrite(&first, revision));
+        assert_eq!(target.begin(true).unwrap().0, first);
+        assert!(target.begin(true).is_none());
+    }
+
+    #[test]
+    fn a_late_export_collision_cannot_restore_cleared_authorization() {
+        let mut target = Target::new("export.json".into());
+        let (path, revision) = target.begin(false).unwrap();
+        target.invalidate();
+        assert!(!target.offer_overwrite(&path, revision));
+        assert!(target.begin(true).is_none());
     }
 
     #[cfg(unix)]
@@ -721,6 +868,29 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_named_pipe_is_rejected_without_waiting_for_a_writer_or_reader() {
+        let dir = temp_dir("fifo");
+        let path = dir.join("fifo.json");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+
+        let mut worker = crate::file_io::Worker::new(|| {}).unwrap();
+        worker
+            .start(move || (load(&path), save(&stereo_appearance(), &path, true)))
+            .unwrap();
+        let (loaded, saved) = worker
+            .receive(std::time::Duration::from_secs(5))
+            .unwrap()
+            .expect("opening the pipe would block without a reader or writer");
+        assert!(matches!(loaded, Err(Error::Io(e)) if e.kind() == io::ErrorKind::InvalidInput));
+        assert!(matches!(saved, Err(Error::Io(e)) if e.kind() == io::ErrorKind::InvalidInput));
+    }
+
     #[test]
     fn import_changes_only_the_layout_parameter() {
         let dir = temp_dir("import");
@@ -745,7 +915,9 @@ mod tests {
         let setter = ParamSetter {
             raw_context: &StandaloneContext,
         };
-        import(&path, &params, &setter).unwrap();
+        let imported = load(&path).unwrap();
+        assert_eq!(save_params(&params), before);
+        apply(&imported, &params, &setter);
         let after = save_params(&params);
 
         for (id, value) in &before {
@@ -781,7 +953,11 @@ mod tests {
         let setter = ParamSetter {
             raw_context: &StandaloneContext,
         };
-        assert!(import(&path, &params, &setter).is_err());
+        let result = load(&path);
+        if let Ok(imported) = &result {
+            apply(imported, &params, &setter);
+        }
+        assert!(result.is_err());
         assert_eq!(save_params(&params), before);
     }
 

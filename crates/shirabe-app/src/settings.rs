@@ -5,8 +5,9 @@
 //! `~/.config/shirabe`) elsewhere.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::audio::Source;
@@ -26,8 +27,31 @@ pub struct Settings {
     pub output: Option<DeviceRef>,
     /// Theme colours imported from an appearance preset; `None` uses the built-in dark theme.
     /// Older settings files do not contain this field.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_theme")]
     pub theme: Option<crate::appearance::ThemeSpec>,
+}
+
+fn deserialize_theme<'de, D>(de: D) -> Result<Option<crate::appearance::ThemeSpec>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(mut theme) = Option::<serde_json::Value>::deserialize(de)? else {
+        return Ok(None);
+    };
+    // Only settings (not preset files) accept the prerelease theme shape. The
+    // renderer used the first and last colours and never used these thresholds.
+    if let Some(fields) = theme.as_object_mut() {
+        if let Some(zones) = fields.remove("vu_zones") {
+            let pair = |zone: &serde_json::Value| serde_json::json!({"lit": zone["lit"], "unlit": zone["unlit"]});
+            if let Some((first, last)) = zones.as_array().and_then(|z| z.first().zip(z.last())) {
+                fields.entry("level_bar").or_insert_with(
+                    || serde_json::json!({"normal": pair(first), "over": pair(last)}),
+                );
+            }
+        }
+    }
+    // An invalid theme must not discard saved audio and metering settings.
+    Ok(serde_json::from_value(theme).ok())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -71,19 +95,23 @@ impl Settings {
             .unwrap_or_default()
     }
 
-    /// Saves the settings; errors are ignored (the application keeps working without them).
-    pub fn save(self) {
-        let Some(p) = path() else { return };
-        if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
+    /// Saves the settings and reports errors to the caller.
+    pub fn save(self) -> Result<()> {
+        let path = path().context("configuration directory is unavailable")?;
+        self.save_to(&path)
+    }
+
+    fn save_to(self, path: &Path) -> Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("cannot create {}", dir.display()))?;
         }
         let file = File {
             version: VERSION,
             settings: self,
         };
-        if let Ok(json) = serde_json::to_vec_pretty(&file) {
-            let _ = std::fs::write(p, json);
-        }
+        let json = serde_json::to_vec_pretty(&file).context("cannot encode settings")?;
+        std::fs::write(path, json).with_context(|| format!("cannot write {}", path.display()))
     }
 }
 
@@ -101,6 +129,39 @@ mod tests {
         let file: File = serde_json::from_str(text).unwrap();
         assert!(file.settings.theme.is_none());
         assert_eq!(file.settings.params.get("lay_preset"), Some(&1.0));
+    }
+
+    #[test]
+    fn settings_with_legacy_vu_zones_keep_params_and_the_rendered_colours() {
+        let mut theme = serde_json::to_value(crate::appearance::ThemeSpec::from_theme(
+            &shirabe_ui::Theme::dark(),
+        ))
+        .unwrap();
+        theme.as_object_mut().unwrap().remove("level_bar");
+        theme["vu_zones"] = serde_json::json!([
+            {"lit": "#123456", "unlit": "#000000"},
+            {"from_db": -5, "lit": "#ffff00", "unlit": "#010000"},
+            {"from_db": 3, "lit": "#ff0000", "unlit": "#000001"}
+        ]);
+        let text = serde_json::json!({"version": 1, "source": "None", "params": {"lay_preset": 1.0}, "theme": theme});
+        let file: File = serde_json::from_value(text).unwrap();
+        assert_eq!(file.settings.params.get("lay_preset"), Some(&1.0));
+        let theme = file.settings.theme.unwrap().to_theme().unwrap();
+        assert_eq!(
+            theme.vu_zones[0].lit,
+            shirabe_ui::egui::Color32::from_rgb(0x12, 0x34, 0x56)
+        );
+        assert_eq!(theme.vu_zones[1].lit, shirabe_ui::egui::Color32::RED);
+    }
+
+    #[test]
+    fn a_failed_settings_write_reports_why_persistence_failed() {
+        let dir = crate::appearance::tests::temp_dir("settings-save");
+        let path = dir.join("standalone.json");
+        std::fs::create_dir(&path).unwrap();
+        let error = Settings::default().save_to(&path).unwrap_err();
+        assert!(error.to_string().contains("standalone.json"));
+        assert!(path.is_dir());
     }
 
     #[test]

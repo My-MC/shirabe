@@ -10,6 +10,7 @@ mod appearance;
 mod audio;
 mod context;
 mod decode;
+mod file_io;
 mod fonts;
 mod output;
 mod player;
@@ -21,8 +22,9 @@ mod settings;
 #[cfg(target_os = "macos")]
 mod tap;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use nih_plug::prelude::ParamSetter;
@@ -38,6 +40,7 @@ use appearance::Appearance;
 use audio::{Choice, Source};
 use context::StandaloneContext;
 use decode::format_time;
+use file_io::Worker;
 use output::DeviceRef;
 use player::Playback;
 use settings::Settings;
@@ -58,6 +61,17 @@ impl AppearanceStatus {
     }
 }
 
+enum FileResult {
+    Import(String, Result<Appearance, appearance::Error>),
+    Export {
+        path: String,
+        revision: u64,
+        overwrite: bool,
+        result: Result<(), appearance::Error>,
+    },
+    Settings(anyhow::Result<()>),
+}
+
 struct App {
     params: Arc<ShirabeParams>,
     shared: Arc<SharedMeters>,
@@ -75,19 +89,21 @@ struct App {
     output: Option<DeviceRef>,
     /// Path typed or dropped for file playback.
     file: String,
-    /// Parameter values at the last save, to save again only after a change.
+    /// Parameter values in the last requested settings snapshot.
     saved_params: std::collections::BTreeMap<String, f32>,
     /// Display-only history of the Lissajous view.
     scope: ScopeView,
-    last_check: std::time::Instant,
+    last_check: Instant,
     /// Whether the appearance preset window is open.
     show_appearance: bool,
-    /// Path typed for appearance import and export.
-    appearance_path: String,
-    /// Export target waiting for the user to confirm replacing it.
-    appearance_pending_overwrite: Option<PathBuf>,
+    appearance_target: appearance::Target,
     /// Outcome of the last appearance action.
     appearance_status: Option<AppearanceStatus>,
+    file_io: std::io::Result<Worker<FileResult>>,
+    /// Only the latest settings snapshot needs saving when the worker is busy.
+    pending_settings: Option<Settings>,
+    import_awaiting_save: Option<String>,
+    import_save_warning: Option<String>,
 }
 
 impl App {
@@ -122,6 +138,7 @@ impl App {
             Source::Input { host, .. } | Source::Output { host, .. } => host.clone(),
             _ => cpal_default_host(&hosts),
         };
+        let repaint = cc.egui_ctx.clone();
         let mut app = Self {
             params,
             shared: Arc::new(SharedMeters::new()),
@@ -139,12 +156,17 @@ impl App {
             host,
             saved_params: settings.params.clone(),
             scope: ScopeView::new(),
-            last_check: std::time::Instant::now(),
+            last_check: Instant::now(),
             show_appearance: false,
-            appearance_path: settings::default_appearance_path()
-                .map_or_else(String::new, |p| p.display().to_string()),
-            appearance_pending_overwrite: None,
+            appearance_target: appearance::Target::new(
+                settings::default_appearance_path()
+                    .map_or_else(String::new, |p| p.display().to_string()),
+            ),
             appearance_status: None,
+            file_io: Worker::new(move || repaint.request_repaint()),
+            pending_settings: None,
+            import_awaiting_save: None,
+            import_save_warning: None,
         };
         // A saved file is not started automatically; the user presses Play.
         if matches!(source, Source::File { .. }) {
@@ -191,22 +213,21 @@ impl App {
 
     fn save_settings(&mut self) {
         self.saved_params = context::save_params(self.params.as_ref());
-        Settings {
+        self.pending_settings = Some(Settings {
             source: Some(self.source.clone()),
             params: self.saved_params.clone(),
             output: self.output.clone(),
             theme: Some(appearance::ThemeSpec::from_theme(&self.theme)),
-        }
-        .save();
+        });
     }
 
     /// Saves the settings about once a second when a parameter has changed, so they survive
     /// an abnormal exit.
     fn save_if_changed(&mut self) {
-        if self.last_check.elapsed() < std::time::Duration::from_secs(1) {
+        if self.last_check.elapsed() < Duration::from_secs(1) {
             return;
         }
-        self.last_check = std::time::Instant::now();
+        self.last_check = Instant::now();
         if context::save_params(self.params.as_ref()) != self.saved_params {
             self.save_settings();
         }
@@ -331,6 +352,7 @@ impl App {
                     .clicked()
                 {
                     self.show_appearance = !self.show_appearance;
+                    self.appearance_target.invalidate();
                 }
             });
         });
@@ -443,12 +465,25 @@ impl App {
             return;
         }
         let mut open = true;
-        egui::Window::new("Appearance preset")
+        let window = egui::Window::new("Appearance preset")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .default_width(440.0)
             .show(ctx, |ui| self.appearance_contents(ui));
+        if !open
+            || window.is_some_and(|window| {
+                ctx.input(|input| {
+                    input.pointer.any_pressed()
+                        && input
+                            .pointer
+                            .interact_pos()
+                            .is_some_and(|p| !window.response.rect.contains(p))
+                })
+            })
+        {
+            self.appearance_target.invalidate();
+        }
         self.show_appearance = open;
     }
 
@@ -464,44 +499,54 @@ impl App {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("File");
-            let mut path = std::mem::take(&mut self.appearance_path);
-            ui.add(
-                egui::TextEdit::singleline(&mut path)
-                    .desired_width(310.0)
-                    .hint_text("Path to an appearance .json file"),
-            );
-            self.appearance_path = path;
+            let mut path = self.appearance_target.path().to_owned();
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut path)
+                        .desired_width(310.0)
+                        .hint_text("Path to an appearance .json file"),
+                )
+                .changed()
+            {
+                self.appearance_target.set_path(path);
+            }
         });
         ui.horizontal(|ui| {
+            let enabled = !self.file_io_busy() && self.import_awaiting_save.is_none();
             if ui
-                .button("Import")
+                .add_enabled(enabled, egui::Button::new("Import"))
                 .on_hover_text("Apply the layout and colours from this file")
                 .clicked()
             {
-                self.import_appearance(ui.ctx());
+                self.import_appearance();
             }
             if ui
-                .button("Export")
+                .add_enabled(enabled, egui::Button::new("Export"))
                 .on_hover_text("Write the current layout and colours to this file")
                 .clicked()
             {
                 self.export_appearance(false);
             }
-            if self.appearance_pending_overwrite.is_some() {
+            if self.appearance_target.pending().is_some() {
                 if ui
-                    .button("Overwrite")
-                    .on_hover_text("Replace the file that already exists")
+                    .add_enabled(enabled, egui::Button::new("Overwrite"))
+                    .on_hover_text("Replace only the file named below")
                     .clicked()
                 {
                     self.export_appearance(true);
                 }
                 if ui.button("Cancel").clicked() {
-                    self.appearance_pending_overwrite = None;
+                    self.appearance_target.invalidate();
                     self.appearance_status = None;
                 }
             }
         });
-        if let Some(status) = &self.appearance_status {
+        if let Some(path) = self.appearance_target.pending() {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                format!("File already exists. Replace ‘{path}’?"),
+            );
+        } else if let Some(status) = &self.appearance_status {
             let color = if status.error {
                 ui.visuals().error_fg_color
             } else {
@@ -511,76 +556,145 @@ impl App {
         }
     }
 
-    fn import_appearance(&mut self, ctx: &egui::Context) {
-        let path = self.appearance_path.trim().to_owned();
-        if path.is_empty() {
+    fn import_appearance(&mut self) {
+        let Some((path, _)) = self.appearance_target.begin(false) else {
             self.appearance_status = Some(AppearanceStatus::error(
                 "Choose a file path to import.".to_owned(),
             ));
             return;
-        }
-        // `import` validates the whole file before it touches the layout parameter.
-        let result = {
-            let setter = ParamSetter {
-                raw_context: &self.context,
-            };
-            appearance::import(Path::new(&path), &self.params, &setter)
         };
-        match result {
-            Ok(imported) => {
-                self.theme = imported.theme;
-                apply_visuals(ctx, &self.theme);
-                self.appearance_pending_overwrite = None;
-                // The layout is a parameter (saved by the autosave) but the theme is not,
-                // so save both now.
-                self.save_settings();
-                self.appearance_status = Some(AppearanceStatus::ok(format!("Imported {path}.")));
+        let result = self.start_file_job(move || {
+            let result = appearance::load(Path::new(&path));
+            FileResult::Import(path, result)
+        });
+        self.appearance_status = Some(match result {
+            Ok(()) => AppearanceStatus::ok("Reading appearance file…".into()),
+            Err(error) => AppearanceStatus::error(format!("Cannot import: {error}")),
+        });
+    }
+
+    fn export_appearance(&mut self, overwrite: bool) {
+        let Some((path, revision)) = self.appearance_target.begin(overwrite) else {
+            let message = if overwrite {
+                "Use Export first to confirm the file to replace."
+            } else {
+                "Choose a file path to export."
+            };
+            self.appearance_status = Some(AppearanceStatus::error(message.into()));
+            return;
+        };
+        let current = Appearance::current(&self.params, &self.theme);
+        let result = self.start_file_job(move || {
+            let result = appearance::save(&current, Path::new(&path), overwrite);
+            FileResult::Export {
+                path,
+                revision,
+                overwrite,
+                result,
             }
-            Err(error) => {
-                self.appearance_status =
-                    Some(AppearanceStatus::error(format!("Cannot import: {error}")));
+        });
+        self.appearance_status = Some(match result {
+            Ok(()) => AppearanceStatus::ok("Writing appearance file…".into()),
+            Err(error) => AppearanceStatus::error(format!("Cannot export: {error}")),
+        });
+    }
+
+    fn file_io_busy(&self) -> bool {
+        self.file_io.as_ref().is_ok_and(Worker::busy)
+    }
+
+    fn start_file_job(
+        &mut self,
+        job: impl FnOnce() -> FileResult + Send + 'static,
+    ) -> Result<(), String> {
+        self.file_io
+            .as_mut()
+            .map_err(|e| e.to_string())?
+            .start(job)
+            .map_err(|e| e.to_string())
+    }
+
+    fn start_settings_save(&mut self) {
+        if self.file_io_busy() {
+            return;
+        }
+        if let Some(settings) = self.pending_settings.take() {
+            if let Err(error) = self.start_file_job(move || FileResult::Settings(settings.save())) {
+                self.finish_settings_save(Err(anyhow::anyhow!(error)));
             }
         }
     }
 
-    /// Writes the current appearance. `overwrite` is only set after the user confirms the
-    /// file that was reported as existing, and that exact file is replaced.
-    fn export_appearance(&mut self, overwrite: bool) {
-        let typed = self.appearance_path.trim().to_owned();
-        let path = if overwrite {
-            self.appearance_pending_overwrite
-                .clone()
-                .unwrap_or_else(|| PathBuf::from(&typed))
-        } else {
-            PathBuf::from(&typed)
-        };
-        if path.as_os_str().is_empty() {
-            self.appearance_status = Some(AppearanceStatus::error(
-                "Choose a file path to export.".to_owned(),
-            ));
-            return;
+    fn finish_settings_save(&mut self, result: anyhow::Result<()>) {
+        let imported = self.import_awaiting_save.is_some();
+        if let Some(path) = self.import_awaiting_save.take() {
+            self.appearance_status = Some(AppearanceStatus::ok(format!("Imported {path}.")));
         }
-        let current = Appearance::current(&self.params, &self.theme);
-        match appearance::save(&current, &path, overwrite) {
-            Ok(()) => {
-                self.appearance_pending_overwrite = None;
-                self.appearance_status = Some(AppearanceStatus::ok(format!(
-                    "Exported {}.",
-                    path.display()
-                )));
+        match result {
+            Ok(()) => self.import_save_warning = None,
+            Err(error) if imported => {
+                self.import_save_warning = Some(format!(
+                    "Appearance applied, but settings could not be saved and may not survive restart: {error:#}"
+                ));
             }
-            Err(appearance::Error::Exists) => {
-                self.appearance_pending_overwrite = Some(path.clone());
-                self.appearance_status = Some(AppearanceStatus::error(format!(
-                    "{} already exists; press Overwrite to replace it.",
-                    path.display()
-                )));
-            }
+            Err(_) => {}
+        }
+    }
+
+    fn poll_file_job(&mut self, ctx: &egui::Context) {
+        let Ok(worker) = &mut self.file_io else {
+            return;
+        };
+        let result = match worker.poll() {
+            Ok(Some(result)) => result,
+            Ok(None) => return,
             Err(error) => {
-                self.appearance_pending_overwrite = None;
-                self.appearance_status =
-                    Some(AppearanceStatus::error(format!("Cannot export: {error}")));
+                if self.import_awaiting_save.is_some() {
+                    self.finish_settings_save(Err(error.into()));
+                } else {
+                    self.appearance_status = Some(AppearanceStatus::error(error.to_string()));
+                }
+                return;
             }
+        };
+        match result {
+            FileResult::Import(path, Ok(imported)) => {
+                let setter = ParamSetter {
+                    raw_context: &self.context,
+                };
+                appearance::apply(&imported, &self.params, &setter);
+                self.theme = imported.theme;
+                apply_visuals(ctx, &self.theme);
+                self.appearance_status = Some(AppearanceStatus::ok(format!(
+                    "Imported {path}; saving settings…"
+                )));
+                self.import_awaiting_save = Some(path);
+                self.save_settings();
+            }
+            FileResult::Import(_, Err(error)) => {
+                self.appearance_status =
+                    Some(AppearanceStatus::error(format!("Cannot import: {error}")));
+            }
+            FileResult::Export {
+                path,
+                revision,
+                overwrite,
+                result,
+            } => {
+                self.appearance_status = match result {
+                    Ok(()) => Some(AppearanceStatus::ok(format!("Exported {path}."))),
+                    Err(appearance::Error::Exists)
+                        if !overwrite
+                            && self.appearance_target.offer_overwrite(&path, revision) =>
+                    {
+                        None
+                    }
+                    Err(error) => Some(AppearanceStatus::error(format!(
+                        "Cannot export {path:?}: {error}"
+                    ))),
+                };
+            }
+            FileResult::Settings(result) => self.finish_settings_save(result),
         }
     }
 
@@ -604,9 +718,13 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Meters move continuously, so redraw every frame.
         ctx.request_repaint();
+        self.poll_file_job(ctx);
         self.take_dropped_file(ctx);
         egui::TopBottomPanel::top("audio").show(ctx, |ui| {
             self.audio_bar(ui);
+            if let Some(warning) = &self.import_save_warning {
+                ui.colored_label(ui.visuals().error_fg_color, warning);
+            }
             if matches!(self.source, Source::File { .. }) {
                 ui.separator();
                 self.playback_bar(ui);
@@ -627,10 +745,21 @@ impl eframe::App for App {
             );
         });
         self.appearance_window(ctx);
+        self.start_settings_save();
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Give ordinary settings saves time to finish, but never join a worker
+        // that may be blocked indefinitely inside the filesystem.
+        let deadline = Instant::now() + Duration::from_millis(250);
+        if let Ok(worker) = &mut self.file_io {
+            let _ = worker.receive(deadline.saturating_duration_since(Instant::now()));
+        }
         self.save_settings();
+        self.start_settings_save();
+        if let Ok(worker) = &mut self.file_io {
+            let _ = worker.receive(deadline.saturating_duration_since(Instant::now()));
+        }
     }
 }
 

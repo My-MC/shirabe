@@ -272,29 +272,34 @@ XDG_CONFIG_HOME=/tmp/shirabe-appearance DISPLAY=:99 ./target/debug/shirabe
 |---|---|
 | 新しいパスで Export | 指定したファイルを作り、形式、バージョン、レイアウト名、テーマ色だけを書く |
 | 同じパスでもう一度 Export | 上書きせず、「Overwrite」と「Cancel」を表示する。Cancel でファイルは変わらない |
+| 確認中にパスを編集する、または（失敗する）Import を行う | 確認を取り消し、改めて Export するまで Overwrite を表示しない |
 | レイアウトを Stereo、背景色を変えたファイルを Import | 配置と色だけが変わり、Integrated などの測定値は続く |
 | Import 後にアプリを再起動 | 読み込んだレイアウトと色で起動する |
 | 不正な色のファイルを Import | エラーを表示し、レイアウト、色、`standalone.json` は変わらない |
+| 読み込み成功後に `standalone.json` に書けない | 外観は変わり、次回起動時に維持されない可能性を警告する |
 | 640×440 に縮小 | 「Appearance」ボタンと、ラウドネスの全行、Time、Target が欠けない |
 
-2026-11-26 に Linux（Xvfb :97、ALSA、Source: None、テストオシレーター -18 dBFS）のスタンドアロンアプリで確認した結果は次のとおりです。
+Linux（Xvfb、ALSA、Source: None、テストオシレーター -18 dBFS）のスタンドアロンアプリで確認した結果は次のとおりです。
 
 | 確認したこと | 結果 |
 |---|---|
-| 初回の Export | `appearance.json` を 739 バイトで作成。トップレベルのキーは `format`、`layout`、`theme`、`version` のみ |
-| 既存ファイルへの Export | 上書きせず、赤い案内と「Overwrite」「Cancel」を表示。Cancel の前後でファイルの MD5 は不変 |
-| Stereo と独自色の Import | 配置が Stereo に変わり、背景 `#201018`、メーターはシアン、黄、ピンクに変化。Integrated は -18.0 LKFS のまま |
-| Import 後の `standalone.json` | `lay_preset` が 1.0、`theme.background` が `#201018`。`source` は `None`、`osc_on` は 1.0、`ld_tgt` は 0.0 のまま |
+| 初回の Export | `level_bar.normal` と `level_bar.over` を含むバージョン 1 の JSON を作成した |
+| 既存ファイルへの Export | 対象パスを確認画面に表示し、明示的な Overwrite まで既存の内容は不変だった |
+| パス編集と不正な JSON の Import | 確認が消え、元のファイルと設定ファイルは変わらなかった |
+| Stereo と独自色の Import | 配置が Stereo に変わり、背景 `#201018` とシアンの VU バーが反映された。Integrated は -18.0 LKFS のままだった |
+| Import 後の `standalone.json` | `lay_preset` が 1.0、`theme.background` が `#201018` になった。`source` は `None`、`osc_on` は 1.0 のままだった |
 | 再起動 | Stereo と背景色、メーター色が復元された |
-| 不正な色（`#zzzzzz`）の Import | 「Cannot import: Invalid theme: background must be #rrggbb, got '#zzzzzz'.」を表示。Stereo、背景色、`standalone.json` は不変 |
-| Import 後の Overwrite | 同じレイアウト名と色を書き出し、読み込み前の値と一致した |
-| 640×440 | 「Appearance」ボタン、Integrated、LRA、PLR、M max、S max、TP max、Time、Target が表示された |
+| 設定保存の失敗 | 分離した設定先をディレクトリに置き換えると、外観は反映され、設定を保存できない旨が表示された |
+| ワーカーの待機中 | 分離した設定先を名前付きパイプに置き換えて I/O 待ちを確認した。待機中も「Appearance」を閉じられ、Integrated は -18.0 LKFS のまま Time が進んだ |
+| 640×440 | 「Appearance」、Integrated、LRA、PLR、M max、S max、TP max、Time、Target が表示された |
 
-自動テストでは、ファイルの往復、未知の形式・バージョン・レイアウト・フィールドの拒否、色と色分け（個数と順序）の検証、64 KiB を超えるファイルの拒否、既存ファイルの保護、Import が `lay_preset` 以外のパラメーターを変えないこと、古い設定ファイルの読み込みを確認します。
+自動テストでは、不正な色やバーの閾値の拒否、64 KiB の上限、既存・特殊ファイルの保護、上書き確認の取り消し、設定の互換性と書き込みエラー、処理中のワーカーへの追加要求の拒否と完了通知も確認します。
+スタンドアロンの関連テストは次のコマンドで実行できます。
 
 ```sh
 cargo test -p shirabe-app appearance
 cargo test -p shirabe-app settings
+cargo test -p shirabe-app file_io
 ```
 
 ## GPU のない環境での動作
