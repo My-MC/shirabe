@@ -50,7 +50,6 @@ pub(crate) fn create(
     params: Arc<ShirabeParams>,
     shared: Arc<SharedMeters>,
 ) -> Option<Box<dyn Editor>> {
-    let egui_state = params.editor_state.clone();
     create_egui_editor(
         params.editor_state.clone(),
         EditorState {
@@ -67,17 +66,21 @@ pub(crate) fn create(
             // Meters move continuously, so redraw every frame while the editor is open.
             ctx.request_repaint();
 
-            ResizableWindow::new("shirabe-main")
-                .min_size(vec2(640.0, 380.0))
-                .show(ctx, egui_state.as_ref(), |ui| {
-                    egui::Frame::default()
-                        .inner_margin(egui::Margin::same(8))
-                        .show(ui, |ui| {
-                            draw(ui, &params, &shared, setter, &state.theme, &mut state.scope)
-                        });
-                });
+            plugin_window(ctx, &params, |ui| {
+                draw(ui, &params, &shared, setter, &state.theme, &mut state.scope);
+            });
         },
     )
+}
+
+fn plugin_window(ctx: &egui::Context, params: &ShirabeParams, content: impl FnOnce(&mut egui::Ui)) {
+    ResizableWindow::new("shirabe-main")
+        .min_size(vec2(640.0, 380.0))
+        .show(ctx, params.editor_state.as_ref(), |ui| {
+            egui::Frame::default()
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, content);
+        });
 }
 
 /// State owned by one editor instance: the theme and the display-only Lissajous history.
@@ -1105,8 +1108,20 @@ fn loudness_panel(
             theme.text_dim,
         ),
     ];
+    const ROW_HEIGHT: f32 = 16.0;
+    const ROW_STEP: f32 = 19.0;
+    const LRA_NOTE_HEIGHT: f32 = 14.0;
+    // At the minimum window height the Custom controls take an extra row. Recover the
+    // space for the note from the row gaps, not by shrinking the text or moving tiles.
+    let row_step = if lra_unstable {
+        ((rect.bottom() - y - LRA_NOTE_HEIGHT) / rows.len() as f32)
+            .floor()
+            .clamp(ROW_HEIGHT, ROW_STEP)
+    } else {
+        ROW_STEP
+    };
     for (name, value, colour) in rows {
-        if y + 16.0 > rect.bottom() {
+        if y + ROW_HEIGHT > rect.bottom() {
             break;
         }
         painter.text(
@@ -1123,9 +1138,9 @@ fn loudness_panel(
             FontId::monospace(12.0),
             colour,
         );
-        y += 19.0;
+        y += row_step;
     }
-    if lra_unstable && y + 14.0 <= rect.bottom() {
+    if lra_unstable && y + LRA_NOTE_HEIGHT <= rect.bottom() {
         painter.text(
             pos2(left, y),
             Align2::LEFT_TOP,
@@ -1370,6 +1385,135 @@ fn short_number(v: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimum_custom_window_shows_all_readouts_and_unstable_lra_note() {
+        for preset in [LayoutPreset::Stereo, LayoutPreset::Standard] {
+            let params = ShirabeParams::default();
+            // These pointers come from the live parameters owned by this test.
+            unsafe {
+                params
+                    .layout_preset
+                    .as_ptr()
+                    .set_normalized_value(params.layout_preset.preview_normalized(preset));
+                params.loudness_target.as_ptr().set_normalized_value(
+                    params
+                        .loudness_target
+                        .preview_normalized(LoudnessTarget::Custom),
+                );
+            }
+            assert_eq!(params.layout_preset.value(), preset);
+            assert_eq!(params.loudness_target.value(), LoudnessTarget::Custom);
+            let shared = SharedMeters::new();
+            shared.loudness.range.store(Some(0.0));
+            shared.loudness.plr.store(Some(16.0));
+            shared.loudness.max_momentary.store(Some(-22.0));
+            shared.loudness.max_short_term.store(Some(-23.0));
+            let theme = Theme::dark();
+            let mut scope = ScopeView::new();
+            let ctx = egui::Context::default();
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(640.0, 380.0))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    let setter = ParamSetter {
+                        raw_context: &TestGuiContext,
+                    };
+                    plugin_window(ctx, &params, |ui| {
+                        draw(ui, &params, &shared, &setter, &theme, &mut scope);
+                    });
+                },
+            );
+            let text = |label| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|clipped| match &clipped.shape {
+                        egui::Shape::Text(text) if text.galley.text() == label => {
+                            let bounds = text.visual_bounding_rect();
+                            assert!(
+                                clipped.clip_rect.contains_rect(bounds),
+                                "{preset:?}: {label} clipped"
+                            );
+                            Some((bounds, text.galley.job.sections[0].format.font_id.size))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("{preset:?}: missing {label:?}"))
+            };
+            let (heading, _) = text("INTEGRATED");
+            let panel = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(panel)
+                        if panel.fill == theme.panel && panel.rect.contains_rect(heading) =>
+                    {
+                        Some(panel.rect)
+                    }
+                    _ => None,
+                })
+                .expect("readout panel");
+            let mut bottom = heading.bottom();
+            for (label, value) in [
+                ("LRA", "0.0 LU *"),
+                ("PLR", "16.0 LU"),
+                ("M max", "-22.0 LUFS"),
+                ("S max", "-23.0 LUFS"),
+                ("TP max", "-inf dBTP"),
+                ("Time", "0:00"),
+                ("Target", "-14 / -1"),
+            ] {
+                let (row, size) = text(label);
+                let (value_bounds, value_size) = text(value);
+                assert_eq!(size, 12.0, "{preset:?}: {label}");
+                assert_eq!(value_size, 12.0, "{preset:?}: {value}");
+                assert!(
+                    row.right() <= value_bounds.left(),
+                    "{preset:?}: {label} overlaps its value"
+                );
+                let row = row.union(value_bounds);
+                assert!(
+                    panel.contains_rect(row) && row.top() >= bottom,
+                    "{preset:?}: {label} is clipped or overlaps another row"
+                );
+                bottom = row.bottom();
+            }
+            let (note, _) = text("* LRA not yet stable (< 60 s)");
+            assert!(
+                panel.contains_rect(note) && note.top() >= bottom,
+                "{preset:?}: note is clipped or overlaps the rows"
+            );
+        }
+    }
+
+    struct TestGuiContext;
+
+    impl GuiContext for TestGuiContext {
+        fn plugin_api(&self) -> PluginApi {
+            PluginApi::Vst3
+        }
+        fn request_resize(&self) -> bool {
+            false
+        }
+        unsafe fn raw_begin_set_parameter(&self, _: ParamPtr) {
+            unreachable!()
+        }
+        unsafe fn raw_set_parameter_normalized(&self, _: ParamPtr, _: f32) {
+            unreachable!()
+        }
+        unsafe fn raw_end_set_parameter(&self, _: ParamPtr) {
+            unreachable!()
+        }
+        fn get_state(&self) -> PluginState {
+            unreachable!()
+        }
+        fn set_state(&self, _: PluginState) {
+            unreachable!()
+        }
+    }
 
     /// BBC marks: 4 dB apart, 6 dB between 1 and 2, mark 4 = alignment level.
     #[test]
