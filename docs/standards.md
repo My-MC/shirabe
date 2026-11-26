@@ -17,6 +17,7 @@ Shirabe の各メーターが従う規格・資料と、その対応状況をま
 | EBU Tech 3342（Loudness Range） | 2023-11 | EBU から無償で入手 |
 | EBU R 128 | v5（2023-11） | EBU から無償で入手 |
 | EBU R 128 s1 | v3（2020-08） | EBU から無償で入手 |
+| [EBU R 128 s2](https://tech.ebu.ch/files/live/sites/tech/files/shared/r/r128s2v3_0.pdf)（Loudness in Streaming） | v3.0（2023-11） | EBU から無償で入手 |
 | EBU loudness test set | v05（2016-03） | EBU が配布（技術試験用、再配布不可） |
 | EBU Tech 3205（EBU 標準 PPM） | 第 2 版 | EBU から無償で入手 |
 | EBU R 68（アライメントレベル） | 2000 | EBU から無償で入手 |
@@ -44,6 +45,7 @@ Shirabe の各メーターが従う規格・資料と、その対応状況をま
 | 更新頻度 | S は 10 Hz 以上、I は 1 Hz 以上 | 準拠（2.5 ms 以下ごとに更新） |
 | I と LRA の操作 | 開始・一時停止・再開・リセットを I と LRA で同時に行う | 準拠（Pause / Continue / Reset） |
 | Max M / Max S | 表示できること。I と同時にリセット | 準拠 |
+| PLR | 番組ラウドネスと最大トゥルーピークの差（EBU R 128 s2 p. 5、用語集） | 測定中の最大トゥルーピークから絶対値の Integrated を引きます。一時停止中は保持し、Integrated がないときは `--` を表示します |
 | 目盛り | 「EBU +9」（-18〜+9 LU）を既定とし、「EBU +18」（-36〜+18 LU）も選べる | 準拠 |
 | 単位 | 絶対値（LUFS）と相対値（LU）の両方を選べる。単位を常に表示 | 準拠。ARIB と ATSC のプリセットでは、各資料の表記に合わせて LKFS と表示 |
 | 表示精度 | 小数点以下 1 桁まで | 準拠 |

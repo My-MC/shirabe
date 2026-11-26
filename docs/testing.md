@@ -105,6 +105,14 @@ SKIP_BUNDLE=1 tools/host-tests/run.sh
 
 Ardour の作業ファイルは `target/host-tests/` に作られ、実行のたびに作り直されます。
 
+## PLR の表示
+
+Integrated が確定すると、番組の最大トゥルーピークと Integrated ラウドネスの差を LU で表示します。
+1 kHz・-18 dBFS のモノラル正弦波では、トゥルーピークが約 -18 dBTP、Integrated が約 -21 LUFS になり、PLR は約 3 LU になります。
+同じ信号を左右に出すステレオのテストオシレーターでは、Integrated が約 -18 LUFS になり、PLR は約 0 LU です。
+Pause 中は PLR が保持され、Reset 後は Integrated が求まるまで `--` を表示します。
+画面の `TP max` は Pause 中も更新するため、PLR に使う番組の最大値とは異なる場合があります。
+
 ## VU の針表示
 
 Level で VU を選び、「Needle」をオンにするとチャンネルごとに針が表示されます。

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use shirabe_dsp::{
     db_to_gain, ChannelLayout, LoudnessMeter, PeakBallistics, PeakMeter, PpmMeter, PpmType,
-    SineOscillator, TruePeakMeter, VuMeter,
+    SineOscillator, TruePeakMeter, VuMeter, MINUS_INFINITY_DB,
 };
 
 use crate::denormal::DenormalGuard;
@@ -22,6 +22,7 @@ pub struct MeterEngine {
     sample_rate: f32,
     peak: Vec<PeakMeter>,
     true_peak: Vec<TruePeakMeter>,
+    programme_peak: f32,
     vu: Vec<VuMeter>,
     ppm_type_i: Vec<PpmMeter>,
     ppm_type_ii: Vec<PpmMeter>,
@@ -44,6 +45,7 @@ impl MeterEngine {
                 .map(|_| PeakMeter::new(sr, PeakBallistics::default()))
                 .collect(),
             true_peak: (0..MAX_CHANNELS).map(|_| TruePeakMeter::new(sr)).collect(),
+            programme_peak: MINUS_INFINITY_DB,
             vu: (0..MAX_CHANNELS).map(|_| VuMeter::new(sr, -18.0)).collect(),
             ppm_type_i: (0..MAX_CHANNELS)
                 .map(|_| PpmMeter::new(sr, PpmType::TypeI))
@@ -88,6 +90,7 @@ impl MeterEngine {
         }
         let layout = ChannelLayout::from_channel_count(channels).unwrap_or(ChannelLayout::Stereo);
         self.loudness.prepare(sample_rate, layout.roles());
+        self.programme_peak = MINUS_INFINITY_DB;
         self.osc.reset();
         self.shared.configure(channels, sample_rate);
     }
@@ -107,6 +110,7 @@ impl MeterEngine {
             meter.reset();
         }
         self.loudness.reset();
+        self.programme_peak = MINUS_INFINITY_DB;
         self.osc.reset();
         self.shared.clear();
     }
@@ -117,8 +121,9 @@ impl MeterEngine {
             meter.reset_max();
         }
         for meter in &mut self.true_peak {
-            meter.reset_max();
+            meter.reset();
         }
+        self.programme_peak = MINUS_INFINITY_DB;
         self.loudness.reset_programme();
     }
 
@@ -164,6 +169,8 @@ impl MeterEngine {
             }
             self.level_mode = level_mode;
         }
+        let integrating = self.shared.integrating();
+        let resuming = integrating && !self.loudness.is_integrating();
         for (index, channel) in channels.iter().take(MAX_CHANNELS).enumerate() {
             let channel: &[f32] = channel;
             let readout = self.shared.channel(index);
@@ -173,7 +180,14 @@ impl MeterEngine {
             readout.store(peak);
 
             let true_peak = &mut self.true_peak[index];
+            if resuming {
+                // The FIR has a delay: otherwise the first block could contain paused peaks.
+                true_peak.clear_history();
+            }
             true_peak.process(channel);
+            if integrating {
+                self.programme_peak = self.programme_peak.max(true_peak.block_dbtp());
+            }
             readout
                 .true_peak_max_db
                 .store(true_peak.max_dbtp(), Ordering::Relaxed);
@@ -199,12 +213,19 @@ impl MeterEngine {
                 }
             }
         }
-        self.loudness.set_integrating(self.shared.integrating());
+        self.loudness.set_integrating(integrating);
         self.loudness.process(channels);
         self.shared
             .programme_seconds
             .store(self.loudness.programme_seconds() as f32, Ordering::Relaxed);
-        self.shared.loudness.store(&self.loudness.readout());
+        let loudness = self.loudness.readout();
+        self.shared.loudness.store(&loudness);
+        self.shared.loudness.plr.store(
+            loudness
+                .integrated
+                .filter(|_| self.programme_peak > MINUS_INFINITY_DB)
+                .map(|i| f64::from(self.programme_peak) - i),
+        );
         self.shared.blocks.fetch_add(1, Ordering::Relaxed);
     }
 }

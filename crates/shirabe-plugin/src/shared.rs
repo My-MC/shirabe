@@ -89,6 +89,8 @@ pub struct LoudnessShared {
     pub short_term: OptionalF32,
     /// Integrated loudness in LUFS.
     pub integrated: OptionalF32,
+    /// Programme peak-to-loudness ratio in LU.
+    pub plr: OptionalF32,
     /// Loudness range in LU.
     pub range: OptionalF32,
     /// Maximum momentary loudness in LUFS.
@@ -103,6 +105,7 @@ impl LoudnessShared {
             momentary: OptionalF32::new(),
             short_term: OptionalF32::new(),
             integrated: OptionalF32::new(),
+            plr: OptionalF32::new(),
             range: OptionalF32::new(),
             max_momentary: OptionalF32::new(),
             max_short_term: OptionalF32::new(),
@@ -165,6 +168,7 @@ impl SharedMeters {
             channel.clear();
         }
         self.loudness.store(&LoudnessReadout::default());
+        self.loudness.plr.store(None);
     }
 
     /// Read-outs of channel `index` (must be below [`MAX_CHANNELS`]).

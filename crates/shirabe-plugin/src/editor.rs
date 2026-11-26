@@ -729,8 +729,13 @@ fn loudness_panel(
         theme.text
     };
     let ceiling = view.target.true_peak_ceiling;
-    let rows: [(&str, String, Color32); 6] = [
+    let rows: [(&str, String, Color32); 7] = [
         ("LRA", lra_text, lra_colour),
+        (
+            "PLR",
+            format!("{} LU", format_lufs(l.plr.load())),
+            theme.text,
+        ),
         (
             "M max",
             format!(

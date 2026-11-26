@@ -47,10 +47,11 @@ Windows 11 での確認結果（2026-11-25）は次のとおりです。
 ラウドネスとトゥルーピークは、EBU の公式テスト音源で EBU Tech 3341 / 3342 の全ケースを確認しました。
 表示は EBU Mode の要件（目盛り、単位、I と LRA の操作）に合わせています（[standards.md](standards.md)）。
 スタンドアロンアプリは自前のオーディオ処理に置き換え、入力デバイスの選択画面を追加しました（[#2](https://github.com/My-MC/shirabe/issues/2)）。
-PLR と、音声ファイルを再生しながらの測定は未実装です。
+PLR（最大トゥルーピークと Integrated ラウドネスの差）を表示できます。
+音声ファイルを再生しながらの測定は未実装です。
 
 - トゥルーピーク（ITU-R BS.1770 Annex 2 を参照）
-- ラウドネス：Momentary、Short-term、Integrated、LRA、PLR（ITU-R BS.1770、EBU Tech 3341 / 3342）
+- ラウドネス：Momentary、Short-term、Integrated、LRA（ITU-R BS.1770、EBU Tech 3341 / 3342）と PLR（EBU R 128 s2）
 - 目標値プリセット：ARIB TR-B32、EBU R128、ATSC A/85、配信向け
 - VU（IEC 60268-17）、PPM（IEC 60268-10）
 - VU のバー／針表示の切り替え（実装済み）

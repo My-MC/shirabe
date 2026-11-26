@@ -161,6 +161,7 @@ pub struct LoudnessMeter {
 
     integrating: bool,
     programme_samples: u64,
+    continuous_programme_samples: u64,
     integrated_hist: GateHistogram,
     range_hist: GateHistogram,
     readout: LoudnessReadout,
@@ -191,6 +192,7 @@ impl LoudnessMeter {
             hop_pos: 0,
             integrating: true,
             programme_samples: 0,
+            continuous_programme_samples: 0,
             integrated_hist: GateHistogram::new(),
             range_hist: GateHistogram::new(),
             readout: LoudnessReadout::default(),
@@ -243,6 +245,7 @@ impl LoudnessMeter {
         self.integrated_hist.clear();
         self.range_hist.clear();
         self.programme_samples = 0;
+        self.continuous_programme_samples = 0;
         self.readout.integrated = None;
         self.readout.range = None;
         self.readout.max_momentary = None;
@@ -252,6 +255,9 @@ impl LoudnessMeter {
     /// Starts (`true`) or pauses (`false`) the integrated loudness and loudness range together
     /// (EBU Tech 3341 §2.2). Momentary and short-term loudness keep running.
     pub fn set_integrating(&mut self, integrating: bool) {
+        if !integrating {
+            self.continuous_programme_samples = 0;
+        }
         self.integrating = integrating;
     }
 
@@ -286,6 +292,7 @@ impl LoudnessMeter {
             }
             self.sub_energy += sum;
             self.sub_pos += 1;
+            self.continuous_programme_samples += u64::from(self.integrating);
             if self.sub_pos == self.sub_len {
                 self.finish_sub_block();
             }
@@ -319,7 +326,8 @@ impl LoudnessMeter {
             let e = (self.momentary_sum / (m_len * self.sub_len) as f64).max(0.0);
             let m = energy_to_lufs(e);
             self.readout.momentary = Some(m);
-            if self.integrating {
+            // Keep the live windows running but do not include pre-reset or paused audio.
+            if self.continuous_programme_samples >= (m_len * self.sub_len) as u64 {
                 self.readout.max_momentary =
                     Some(self.readout.max_momentary.map_or(m, |x| x.max(m)));
                 if hop_end {
@@ -336,7 +344,7 @@ impl LoudnessMeter {
             let e = (self.short_term_sum / (n * self.sub_len) as f64).max(0.0);
             let s = energy_to_lufs(e);
             self.readout.short_term = Some(s);
-            if self.integrating {
+            if self.continuous_programme_samples >= (n * self.sub_len) as u64 {
                 self.readout.max_short_term =
                     Some(self.readout.max_short_term.map_or(s, |x| x.max(s)));
                 if hop_end {

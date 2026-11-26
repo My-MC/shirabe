@@ -336,6 +336,19 @@ fn pausing_freezes_integrated_and_range() {
     assert_close("I after continue", m.readout().integrated, -23.0, 0.1);
 }
 
+#[test]
+fn resuming_does_not_integrate_windows_overlapping_a_pause() {
+    let (mut meter, quiet) = stereo(&[(4.0, -23.0)]);
+    run(&mut meter, &quiet, 512);
+    meter.set_integrating(false);
+    let (_, loud) = stereo(&[(4.0, -3.0)]);
+    run(&mut meter, &loud, 512);
+    meter.set_integrating(true);
+    run(&mut meter, &quiet, 512);
+    assert_close("I across pause", meter.readout().integrated, -23.0, 0.1);
+    assert_close("LRA across pause", meter.readout().range, 0.0, 0.2);
+}
+
 /// Tech 3341 §2.4 needs to know how long the programme has been measured (LRA is flagged as
 /// not stable during the first 60 s).
 #[test]

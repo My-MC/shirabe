@@ -40,6 +40,11 @@ impl TruePeakMeter {
         self.max = 0.0;
     }
 
+    /// Discards interpolation history at a programme boundary, preserving the held maximum.
+    pub fn clear_history(&mut self) {
+        self.os.reset();
+    }
+
     /// Clears only the maximum.
     pub fn reset_max(&mut self) {
         self.max = 0.0;
