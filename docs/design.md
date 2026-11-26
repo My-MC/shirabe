@@ -226,6 +226,62 @@ Reset、ホストの再生開始によるリセット、入力の切り替え、
 
 軸の向きと表示区間は表示上の取り決めで、準拠する規格を確認したものではありません（[standards.md](standards.md)）。
 
+### 測定結果の書き出し（スタンドアロン）
+
+スタンドアロンアプリの「Export measurement」から、押した時点の測定値の概要と、記録済みのラウドネス履歴を 1 つのファイルに書き出します。
+「Export」を押したときだけ動作し、測定中に自動では書き出しません。
+書き出し先の既定は設定ディレクトリの `measurement-export.csv` で、JSON を選ぶと `measurement-export.json` に変わります。
+プラグインにはこの画面がなく、書き出しも行いません。
+
+値は「Export」を押した瞬間に UI スレッドでコピーします。
+コピーした後に計測が進んでも、ファイルの内容は押した時点のものです。
+履歴は、読み出しの前後で `LoudnessHistory::epoch()` を比べ、消去と競合したコピーは破棄します。
+書き出しは既存のファイル用ワーカーに依頼するため、画面と計測は止まりません。
+
+| 概要の項目 | JSON の名前 | 単位 |
+|---|---|---|
+| Integrated ラウドネス | `integrated_lufs` | LUFS |
+| ラウドネスレンジ（LRA） | `loudness_range_lu` | LU |
+| PLR | `plr_lu` | LU |
+| Momentary の最大値 | `max_momentary_lufs` | LUFS |
+| Short-term の最大値 | `max_short_term_lufs` | LUFS |
+| チャンネルごとの最大トゥルーピーク | `max_true_peak_dbtp` | dBTP |
+| 番組時間 | `programme_seconds` | s |
+| サンプルレート | `sample_rate_hz` | Hz |
+| チャンネル構成 | `channel_layout`、`channels` | — |
+| 目標値 | `target`（`preset`、`name`、`loudness_lufs`、`unit`、`tolerance_lu`、`true_peak_ceiling_dbtp`） | LUFS / LU / dBTP |
+| 入力の説明 | `source`（`kind`、`host`、`description`、`path`、`test_oscillator`） | — |
+| アプリのバージョン | `app_version` | — |
+| 書き出し時刻（UTC、ISO 8601） | `exported_at` | — |
+
+`channels` は L、R などの役割の並びで、`max_true_peak_dbtp` と同じ順です。
+`channel_layout` は `Mono`、`Stereo`、`5.1` のいずれかで、対応する名前がないときは `null` です。
+`target` の `preset` は `LoudnessTarget` の保存 ID（`arib`、`ebu`、`atsc`、`stream14`、`applepod`、`custom`）で、`name` はパラメーターの英語名です。
+`source.kind` は `none`、`input`、`output`、`monitor`、`system`、`file` のいずれかです。
+`source.description` はデバイス名、または音声ファイルの名前です。
+音声ファイルのフルパスは、画面の「Include the full file path」を選んだときだけ `source.path` に入れます。既定では入れません。
+
+JSON の先頭には、バージョンを含むスキーマ ID `"schema": "shirabe-measurement/1"` を書きます。
+履歴は `history.points` に古い順で並べ、`time_seconds` は残っている最も古い点を 0 とした相対時間です。
+`history.interval_seconds` は記録間隔（0.1 秒）です。
+測定できない値は `null` にします。
+
+CSV は 6 列の表で、1 行目は `section,key,channel,time_seconds,value,unit` です。
+概要は `section` が `summary` の行に 1 項目ずつ書き、履歴は `section` が `history` の行に M と S を 1 行ずつ書きます。
+`channel` はチャンネルごとの値だけに入れます。
+測定できない値は `value` を空欄にします。
+数値は小数点に `.` を使い、ラウドネスとレベルは 2 桁、番組時間と履歴の時刻は 3 桁に丸めます。
+コンマ、引用符、改行を含む文字列は引用符で囲み、引用符は 2 つ重ねます（RFC 4180）。
+行の区切りは CRLF です。
+
+書き出しは外観プリセットと同じ規則で行います。
+新規のファイルは排他的に作成し、同名のファイルがあるときは置き換えてよいかを画面で確認します。
+確認は書き出し先、形式、フルパスを含めるかの指定に結び付け、いずれかを変えると取り消します。
+確認済みの置き換えは、同じディレクトリの一時ファイルに書いてから名前を付け替え、元のファイルを直接切り詰めません。
+形式とパスは書き出しのたびに画面で指定し、設定には保存しません。
+
+プラグインからの書き出しは、ホストの画面にファイル選択を出す方法が未確定のため、実装していません。
+
 ### チャンネル構成
 
 チャンネルは「役割」（L、R、C、LFE、Ls、Rs など）で扱います。

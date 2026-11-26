@@ -10,9 +10,8 @@
 
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use nih_plug::prelude::{Enum, ParamSetter};
 use serde::{Deserialize, Serialize};
@@ -20,6 +19,11 @@ use shirabe_plugin::params::{LayoutPreset, ShirabeParams};
 use shirabe_ui::egui::Color32;
 use shirabe_ui::theme::Zone;
 use shirabe_ui::Theme;
+
+use crate::file_out;
+
+/// UI-only path and one-use overwrite authorization, shared with every file export.
+pub use crate::file_out::Target;
 
 /// Marker written to the `format` field.
 pub const FORMAT: &str = "shirabe-appearance";
@@ -29,59 +33,6 @@ pub const VERSION: u32 = 1;
 pub const MAX_BYTES: u64 = 64 * 1024;
 /// Most colour zones accepted in one list.
 pub const MAX_ZONES: usize = 32;
-
-/// UI-only path and one-use overwrite authorization.
-pub struct Target {
-    typed: String,
-    pending: Option<String>,
-    revision: u64,
-}
-
-impl Target {
-    pub fn new(typed: String) -> Self {
-        Self {
-            typed,
-            pending: None,
-            revision: 0,
-        }
-    }
-
-    pub fn path(&self) -> &str {
-        &self.typed
-    }
-
-    pub fn pending(&self) -> Option<&str> {
-        self.pending.as_deref()
-    }
-
-    pub fn set_path(&mut self, path: String) {
-        self.typed = path;
-        self.invalidate();
-    }
-
-    pub fn invalidate(&mut self) {
-        self.pending = None;
-        self.revision = self.revision.wrapping_add(1);
-    }
-
-    pub fn begin(&mut self, overwrite: bool) -> Option<(String, u64)> {
-        let authorized = self.pending() == Some(self.path());
-        self.invalidate();
-        if self.typed.trim().is_empty() || (overwrite && !authorized) {
-            return None;
-        }
-        Some((self.typed.clone(), self.revision))
-    }
-
-    /// Only the still-current request can offer confirmation after a collision.
-    pub fn offer_overwrite(&mut self, path: &str, revision: u64) -> bool {
-        if self.revision != revision || self.path() != path {
-            return false;
-        }
-        self.pending = Some(path.to_owned());
-        true
-    }
-}
 
 /// A validated appearance: the layout and the theme it applies.
 #[derive(Clone, Debug, PartialEq)]
@@ -327,74 +278,25 @@ pub fn save(appearance: &Appearance, path: &Path, overwrite: bool) -> Result<(),
         theme: ThemeSpec::from_theme(&appearance.theme),
     };
     let json = serde_json::to_vec_pretty(&file).map_err(Error::Json)?;
-    let dir = path
-        .parent()
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(dir)?;
-
-    if overwrite {
-        match fs::symlink_metadata(path) {
-            Ok(metadata) => {
-                require_regular_file(&metadata)?;
-                return replace_file(dir, path, &json);
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-
-    let mut file = match File::create_new(path) {
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Err(Error::Exists),
-        result => result?,
-    };
-    file.write_all(&json)?;
-    Ok(())
+    file_out::write(path, &json, overwrite).map_err(Error::from)
 }
 
-fn replace_file(dir: &Path, path: &Path, bytes: &[u8]) -> Result<(), Error> {
-    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-    let (temp, mut file) = loop {
-        let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        let temp = dir.join(format!(
-            ".shirabe-appearance-{}-{serial}.tmp",
-            std::process::id()
-        ));
-        match File::create_new(&temp) {
-            Ok(file) => break (temp, file),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
+impl From<file_out::WriteError> for Error {
+    fn from(error: file_out::WriteError) -> Self {
+        match error {
+            file_out::WriteError::Exists => Self::Exists,
+            file_out::WriteError::Io(error) => Self::Io(error),
         }
-    };
-
-    let written = file.write_all(bytes).and_then(|()| file.sync_all());
-    drop(file);
-    // Rename the directory entry, not its referent. If replacement isn't
-    // supported (e.g. a Windows sharing violation), don't fall back to truncation.
-    if let Err(error) = written.and_then(|()| fs::rename(&temp, path)) {
-        let _ = fs::remove_file(&temp);
-        return Err(error.into());
     }
-    Ok(())
-}
-
-fn require_regular_file(metadata: &fs::Metadata) -> io::Result<()> {
-    if !metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "appearance path must be a regular file",
-        ));
-    }
-    Ok(())
 }
 
 /// Reads and validates an appearance file.
 pub fn load(path: &Path) -> Result<Appearance, Error> {
     // Reject stable special files and leaf symlinks before opening. Concurrent
     // changes between the check and open can still block the worker.
-    require_regular_file(&fs::symlink_metadata(path)?)?;
+    file_out::require_regular_file(&fs::symlink_metadata(path)?)?;
     let file = File::open(path)?;
-    require_regular_file(&file.metadata()?)?;
+    file_out::require_regular_file(&file.metadata()?)?;
     let mut reader = file.take(MAX_BYTES + 1);
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes)?;
@@ -840,22 +742,6 @@ pub(crate) mod tests {
         save(&stereo_appearance(), &path, true).unwrap();
         assert_eq!(load(&path).unwrap(), stereo_appearance());
         assert_eq!(fs::read_to_string(&alias).unwrap(), "keep me");
-    }
-
-    #[test]
-    fn a_failed_replacement_removes_its_temporary_file() {
-        let dir = temp_dir("failed-replace");
-        let destination = dir.join("directory.json");
-        fs::create_dir(&destination).unwrap();
-        let unrelated = write_file(&dir, ".shirabe-appearance-unrelated.tmp", "keep me");
-
-        // A directory cannot be replaced by a regular file. Exercise the rename
-        // error path directly; save would normally reject this destination earlier.
-        assert!(replace_file(&dir, &destination, b"new data").is_err());
-
-        assert!(destination.is_dir());
-        assert_eq!(fs::read_to_string(unrelated).unwrap(), "keep me");
-        assert_eq!(fs::read_dir(&*dir).unwrap().count(), 2);
     }
 
     #[cfg(unix)]

@@ -272,6 +272,18 @@ texts! {
     overwrite_hint: "Replace only the file named below", "下に表示されたファイルだけを置き換えます";
     reading_appearance: "Reading appearance file…", "外観ファイルを読み込み中…";
     writing_appearance: "Writing appearance file…", "外観ファイルを書き出し中…";
+    measurement_export: "Export measurement", "測定結果の書き出し";
+    measurement_export_hint: "Write the values and the recorded history shown now to a file",
+        "現在の測定値と記録した履歴をファイルに書き出します";
+    measurement_export_note: "Writes the summary and the recorded loudness history at the moment you press Export. The measurement keeps running.",
+        "「書き出し」を押した時点の概要と、記録したラウドネスの履歴を書きます。測定は止まりません。";
+    measurement_format: "Format", "形式";
+    measurement_path_hint: "Path to a measurement .csv or .json file",
+        "測定結果の .csv / .json ファイルのパス";
+    include_source_path: "Include the full file path", "ファイルのフルパスを含める";
+    include_source_path_hint: "Off writes only the name of the measured file",
+        "オフでは測定したファイルの名前だけを書きます";
+    writing_measurement: "Writing measurement export…", "測定結果を書き出し中…";
 }
 
 impl Text {
@@ -401,5 +413,46 @@ mod tests {
         let text = Text::new(Lang::Japanese, false);
         assert_eq!(text.lang(), Lang::English);
         assert_eq!(text.reset(), "Reset");
+    }
+
+    #[test]
+    fn the_measurement_export_window_is_translated() {
+        let english = Text::new(Lang::English, true);
+        let japanese = Text::new(Lang::Japanese, true);
+        for (en, ja) in [
+            (english.measurement_export(), japanese.measurement_export()),
+            (
+                english.measurement_export_hint(),
+                japanese.measurement_export_hint(),
+            ),
+            (
+                english.measurement_export_note(),
+                japanese.measurement_export_note(),
+            ),
+            (english.measurement_format(), japanese.measurement_format()),
+            (
+                english.measurement_path_hint(),
+                japanese.measurement_path_hint(),
+            ),
+            (
+                english.include_source_path(),
+                japanese.include_source_path(),
+            ),
+            (
+                english.include_source_path_hint(),
+                japanese.include_source_path_hint(),
+            ),
+            (
+                english.writing_measurement(),
+                japanese.writing_measurement(),
+            ),
+        ] {
+            assert_ne!(en, ja);
+            assert!(!en.is_empty() && !ja.is_empty());
+            assert!(!ja.is_ascii(), "not Japanese: {ja}");
+        }
+        // Units and format names stay unchanged in both languages.
+        assert_eq!(english.measurement_format(), "Format");
+        assert_eq!(japanese.measurement_format(), "形式");
     }
 }

@@ -2940,6 +2940,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "serde",
  "serde_json",
+ "shirabe-dsp",
  "shirabe-plugin",
  "shirabe-ui",
 ]

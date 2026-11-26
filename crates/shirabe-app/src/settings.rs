@@ -84,6 +84,11 @@ pub fn default_appearance_path() -> Option<PathBuf> {
     Some(config_dir()?.join("appearance.json"))
 }
 
+/// Default path offered for a measurement export.
+pub fn default_measurement_path(extension: &str) -> Option<PathBuf> {
+    Some(config_dir()?.join(format!("measurement-export.{extension}")))
+}
+
 impl Settings {
     /// Loads the settings; returns defaults if the file is missing or unreadable.
     pub fn load() -> Self {

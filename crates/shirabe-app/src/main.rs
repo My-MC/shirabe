@@ -11,6 +11,8 @@ mod audio;
 mod context;
 mod decode;
 mod file_io;
+mod file_out;
+mod measurement;
 mod output;
 mod player;
 #[cfg(target_os = "linux")]
@@ -23,7 +25,7 @@ mod tap;
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
 use nih_plug::prelude::ParamSetter;
@@ -46,12 +48,12 @@ use player::Playback;
 use settings::Settings;
 
 /// Result of the last appearance import or export, shown in its window.
-struct AppearanceStatus {
+struct FileStatus {
     text: String,
     error: bool,
 }
 
-impl AppearanceStatus {
+impl FileStatus {
     fn ok(text: String) -> Self {
         Self { text, error: false }
     }
@@ -68,6 +70,12 @@ enum FileResult {
         revision: u64,
         overwrite: bool,
         result: Result<(), appearance::Error>,
+    },
+    Measurement {
+        path: String,
+        revision: u64,
+        overwrite: bool,
+        result: Result<(), file_out::WriteError>,
     },
     Settings(anyhow::Result<()>),
 }
@@ -103,7 +111,14 @@ struct App {
     show_appearance: bool,
     appearance_target: appearance::Target,
     /// Outcome of the last appearance action.
-    appearance_status: Option<AppearanceStatus>,
+    appearance_status: Option<FileStatus>,
+    /// Whether the measurement export window is open.
+    show_measurement: bool,
+    measurement_target: file_out::Target,
+    measurement_format: measurement::Format,
+    measurement_include_path: bool,
+    /// Outcome of the last measurement export.
+    measurement_status: Option<FileStatus>,
     file_io: std::io::Result<Worker<FileResult>>,
     /// Only the latest settings snapshot needs saving when the worker is busy.
     pending_settings: Option<Settings>,
@@ -170,6 +185,14 @@ impl App {
                     .map_or_else(String::new, |p| p.display().to_string()),
             ),
             appearance_status: None,
+            show_measurement: false,
+            measurement_target: file_out::Target::new(
+                settings::default_measurement_path(measurement::Format::Csv.extension())
+                    .map_or_else(String::new, |p| p.display().to_string()),
+            ),
+            measurement_format: measurement::Format::Csv,
+            measurement_include_path: false,
+            measurement_status: None,
             file_io: Worker::new(move || repaint.request_repaint()),
             pending_settings: None,
             import_awaiting_save: None,
@@ -358,6 +381,14 @@ impl App {
                 {
                     self.show_appearance = !self.show_appearance;
                     self.appearance_target.invalidate();
+                }
+                if ui
+                    .button(text.measurement_export())
+                    .on_hover_text(text.measurement_export_hint())
+                    .clicked()
+                {
+                    self.show_measurement = !self.show_measurement;
+                    self.measurement_target.invalidate();
                 }
             });
         });
@@ -563,9 +594,7 @@ impl App {
 
     fn import_appearance(&mut self, text: Text) {
         let Some((path, _)) = self.appearance_target.begin(false) else {
-            self.appearance_status = Some(AppearanceStatus::error(
-                text.choose_import_path().to_owned(),
-            ));
+            self.appearance_status = Some(FileStatus::error(text.choose_import_path().to_owned()));
             return;
         };
         let result = self.start_file_job(move || {
@@ -573,8 +602,8 @@ impl App {
             FileResult::Import(path, result)
         });
         self.appearance_status = Some(match result {
-            Ok(()) => AppearanceStatus::ok(text.reading_appearance().into()),
-            Err(error) => AppearanceStatus::error(text.cannot_import(&error.to_string())),
+            Ok(()) => FileStatus::ok(text.reading_appearance().into()),
+            Err(error) => FileStatus::error(text.cannot_import(&error.to_string())),
         });
     }
 
@@ -585,7 +614,7 @@ impl App {
             } else {
                 text.choose_export_path()
             };
-            self.appearance_status = Some(AppearanceStatus::error(message.into()));
+            self.appearance_status = Some(FileStatus::error(message.into()));
             return;
         };
         let current = Appearance::current(&self.params, &self.theme);
@@ -600,8 +629,166 @@ impl App {
             }
         });
         self.appearance_status = Some(match result {
-            Ok(()) => AppearanceStatus::ok(text.writing_appearance().into()),
-            Err(error) => AppearanceStatus::error(text.cannot_export(&shown, &error.to_string())),
+            Ok(()) => FileStatus::ok(text.writing_appearance().into()),
+            Err(error) => FileStatus::error(text.cannot_export(&shown, &error.to_string())),
+        });
+    }
+
+    /// Measurement export window: a path, the format and one explicit action.
+    fn measurement_window(&mut self, ctx: &egui::Context, text: Text) {
+        if !self.show_measurement {
+            return;
+        }
+        let mut open = true;
+        let window = egui::Window::new(text.measurement_export())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(460.0)
+            .show(ctx, |ui| self.measurement_contents(ui, text));
+        if !open
+            || window.is_some_and(|window| {
+                ctx.input(|input| {
+                    input.pointer.any_pressed()
+                        && input
+                            .pointer
+                            .interact_pos()
+                            .is_some_and(|p| !window.response.rect.contains(p))
+                })
+            })
+        {
+            self.measurement_target.invalidate();
+        }
+        self.show_measurement = open;
+    }
+
+    fn measurement_contents(&mut self, ui: &mut egui::Ui, text: Text) {
+        ui.label(
+            egui::RichText::new(text.measurement_export_note())
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(text.file());
+            let mut path = self.measurement_target.path().to_owned();
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut path)
+                        .desired_width(330.0)
+                        .hint_text(text.measurement_path_hint()),
+                )
+                .changed()
+            {
+                self.measurement_target.set_path(path);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(text.measurement_format());
+            for format in [measurement::Format::Csv, measurement::Format::Json] {
+                let label = match format {
+                    measurement::Format::Csv => "CSV",
+                    measurement::Format::Json => "JSON",
+                };
+                if ui
+                    .selectable_label(self.measurement_format == format, label)
+                    .clicked()
+                    && self.measurement_format != format
+                {
+                    self.change_measurement_format(format);
+                }
+            }
+        });
+        let mut include = self.measurement_include_path;
+        if ui
+            .checkbox(&mut include, text.include_source_path())
+            .on_hover_text(text.include_source_path_hint())
+            .changed()
+        {
+            self.measurement_include_path = include;
+            self.measurement_target.invalidate();
+        }
+        ui.horizontal(|ui| {
+            let enabled = !self.file_io_busy();
+            if ui
+                .add_enabled(enabled, egui::Button::new(text.export()))
+                .on_hover_text(text.measurement_export_hint())
+                .clicked()
+            {
+                self.export_measurement(false, text);
+            }
+            if self.measurement_target.pending().is_some() {
+                if ui
+                    .add_enabled(enabled, egui::Button::new(text.overwrite()))
+                    .on_hover_text(text.overwrite_hint())
+                    .clicked()
+                {
+                    self.export_measurement(true, text);
+                }
+                if ui.button(text.cancel()).clicked() {
+                    self.measurement_target.invalidate();
+                    self.measurement_status = None;
+                }
+            }
+        });
+        if let Some(path) = self.measurement_target.pending() {
+            ui.colored_label(ui.visuals().error_fg_color, text.file_exists(path));
+        } else if let Some(status) = &self.measurement_status {
+            let color = if status.error {
+                ui.visuals().error_fg_color
+            } else {
+                ui.visuals().weak_text_color()
+            };
+            ui.label(egui::RichText::new(&status.text).color(color));
+        }
+    }
+
+    /// Switches the file format; the default file name follows it.
+    fn change_measurement_format(&mut self, format: measurement::Format) {
+        let old_default = settings::default_measurement_path(self.measurement_format.extension())
+            .map(|path| path.display().to_string());
+        if old_default.as_deref() == Some(self.measurement_target.path()) {
+            if let Some(path) = settings::default_measurement_path(format.extension()) {
+                self.measurement_target.set_path(path.display().to_string());
+            }
+        }
+        self.measurement_format = format;
+        self.measurement_target.invalidate();
+    }
+
+    fn export_measurement(&mut self, overwrite: bool, text: Text) {
+        let Some((path, revision)) = self.measurement_target.begin(overwrite) else {
+            let message = if overwrite {
+                text.overwrite_needs_export()
+            } else {
+                text.choose_export_path()
+            };
+            self.measurement_status = Some(FileStatus::error(message.into()));
+            return;
+        };
+        // Copy every value now, on the UI thread, so the file describes this instant even
+        // though the measurement keeps running while the worker writes it.
+        let snapshot = measurement::Snapshot::capture(
+            &self.shared,
+            &self.params,
+            &self.source,
+            self.measurement_include_path,
+            SystemTime::now(),
+        );
+        let format = self.measurement_format;
+        let shown = path.clone();
+        let result = self.start_file_job(move || {
+            let result = measurement::save(&snapshot, format, Path::new(&path), overwrite);
+            FileResult::Measurement {
+                path,
+                revision,
+                overwrite,
+                result,
+            }
+        });
+        self.measurement_status = Some(match result {
+            Ok(()) => FileStatus::ok(text.writing_measurement().into()),
+            Err(error) => FileStatus::error(text.cannot_export(&shown, &error.to_string())),
         });
     }
 
@@ -634,7 +821,7 @@ impl App {
     fn finish_settings_save(&mut self, result: anyhow::Result<()>, text: Text) {
         let imported = self.import_awaiting_save.is_some();
         if let Some(path) = self.import_awaiting_save.take() {
-            self.appearance_status = Some(AppearanceStatus::ok(text.imported(&path)));
+            self.appearance_status = Some(FileStatus::ok(text.imported(&path)));
         }
         match result {
             Ok(()) => self.import_save_warning = None,
@@ -656,7 +843,7 @@ impl App {
                 if self.import_awaiting_save.is_some() {
                     self.finish_settings_save(Err(error.into()), text);
                 } else {
-                    self.appearance_status = Some(AppearanceStatus::error(error.to_string()));
+                    self.appearance_status = Some(FileStatus::error(error.to_string()));
                 }
                 return;
             }
@@ -669,14 +856,13 @@ impl App {
                 appearance::apply(&imported, &self.params, &setter);
                 self.theme = imported.theme;
                 apply_visuals(ctx, &self.theme);
-                self.appearance_status = Some(AppearanceStatus::ok(text.imported_saving(&path)));
+                self.appearance_status = Some(FileStatus::ok(text.imported_saving(&path)));
                 self.import_awaiting_save = Some(path);
                 self.save_settings();
             }
             FileResult::Import(_, Err(error)) => {
-                self.appearance_status = Some(AppearanceStatus::error(
-                    text.cannot_import(&error.to_string()),
-                ));
+                self.appearance_status =
+                    Some(FileStatus::error(text.cannot_import(&error.to_string())));
             }
             FileResult::Export {
                 path,
@@ -685,14 +871,33 @@ impl App {
                 result,
             } => {
                 self.appearance_status = match result {
-                    Ok(()) => Some(AppearanceStatus::ok(text.exported(&path))),
+                    Ok(()) => Some(FileStatus::ok(text.exported(&path))),
                     Err(appearance::Error::Exists)
                         if !overwrite
                             && self.appearance_target.offer_overwrite(&path, revision) =>
                     {
                         None
                     }
-                    Err(error) => Some(AppearanceStatus::error(
+                    Err(error) => Some(FileStatus::error(
+                        text.cannot_export(&path, &error.to_string()),
+                    )),
+                };
+            }
+            FileResult::Measurement {
+                path,
+                revision,
+                overwrite,
+                result,
+            } => {
+                self.measurement_status = match result {
+                    Ok(()) => Some(FileStatus::ok(text.exported(&path))),
+                    Err(file_out::WriteError::Exists)
+                        if !overwrite
+                            && self.measurement_target.offer_overwrite(&path, revision) =>
+                    {
+                        None
+                    }
+                    Err(error) => Some(FileStatus::error(
                         text.cannot_export(&path, &error.to_string()),
                     )),
                 };
@@ -756,6 +961,7 @@ impl eframe::App for App {
             );
         });
         self.appearance_window(ctx, text);
+        self.measurement_window(ctx, text);
         self.start_settings_save(text);
     }
 

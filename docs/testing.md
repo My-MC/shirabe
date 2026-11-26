@@ -548,3 +548,63 @@ sg audio -c 'ALSA_CONFIG_PATH=/tmp/shirabe-asoundrc \
 
 ファイル再生の Windows / macOS での確認はまだ行っていません。
 WASAPI と Core Audio では、デバイスがファイルのレートを受け付けない場合にアプリ側で変換します。
+
+## 測定結果の書き出しの確認
+
+スタンドアロンアプリの「Export measurement」で、概要と履歴が 1 つのファイルになることを確認します。
+
+### 自動テスト
+
+書式、欠測値、スキーマ、CSV の引用、スナップショット、ファイル操作、表示言語は `cargo test` で検証します。
+
+```sh
+cargo test -p shirabe-app -p shirabe-ui
+```
+
+| 対象 | 内容 |
+|---|---|
+| 数値の書式 | 小数点に `.` を使い、レベルは 2 桁、番組時間と履歴の時刻は 3 桁になること |
+| 欠測値 | JSON では `null`、CSV では `value` が空欄になること |
+| スキーマ | JSON の `schema` が `shirabe-measurement/1` であること |
+| CSV の引用 | コンマ、引用符、改行を含む文字列が引用符で囲まれ、引用符が 2 つ重なること |
+| CSV の形 | すべての行が 6 列で、履歴の時刻が 0 から 0.1 秒ごとに進むこと |
+| スナップショット | `SharedMeters` の値、チャンネルごとの最大トゥルーピーク、目標値、履歴を押した時点でコピーすること |
+| 入力の表記 | 音声ファイルは既定で名前だけ、指定したときだけフルパスになること |
+| 時刻 | UTC の ISO 8601 になり、うるう年と年末年始をまたいでも日付が正しいこと |
+| ファイル操作 | 新規は排他的に作成し、確認なしでは既存ファイルを置き換えないこと |
+| 表示言語 | 書き出し画面の文字が日本語と英語の両方にあること |
+
+### Linux（テストオシレーター）
+
+`Xvfb` と分離した `XDG_CONFIG_HOME` でアプリを起動し、入力 `None` とテストオシレーター（-18 dBFS、1 kHz）で確認します。
+
+```sh
+mkdir -p /tmp/shirabe-export-test/shirabe
+cat > /tmp/shirabe-export-test/shirabe/standalone.json <<'EOF'
+{"version":1,"source":"None","params":{"osc_on":1.0}}
+EOF
+Xvfb :99 -screen 0 1280x800x24 +extension GLX +render -noreset &
+DISPLAY=:99 XDG_CONFIG_HOME=/tmp/shirabe-export-test ./target/debug/shirabe &
+```
+
+`Export measurement` を開き、次の順に操作します。
+
+1. CSV のまま `Export` を押し、`/tmp/shirabe-export-test/shirabe/measurement-export.csv` を読む。
+2. 形式を JSON に変え、パスが `measurement-export.json` に変わることを確認して `Export` を押す。
+3. もう一度 `Export` を押し、確認の表示が出てから `Overwrite` を押す。
+4. 表示言語を日本語に変え、見出しと確認の文が日本語になることを確認する。
+
+2026-11-26 に、次の結果を確認しました。
+
+| 確認したこと | 結果 |
+|---|---|
+| CSV の概要 | `schema`、`app_version` 0.1.0、`exported_at` 2026-11-26T12:24:33Z、`integrated_lufs` -17.99、`max_true_peak_dbtp` L / R -18.00、`target_preset` arib |
+| CSV の履歴 | 0.000 秒から 30.700 秒まで 0.1 秒ごと。測定開始直後の M / S は空欄 |
+| JSON | `schema` が `shirabe-measurement/1`、履歴 496 点、`source.kind` が `none`、`test_oscillator` が `true` |
+| 上書き | 確認の表示のあと `Overwrite` で置き換わり、番組時間 118.58 秒、履歴 1185 点になった |
+| 計測の継続 | 書き出しの間も Time と Integrated が進み続けた |
+| 日本語表示 | 見出しが「測定結果の書き出し」、確認が「ファイルが存在します。「…」を置き換えますか？」になった |
+
+音声ファイルを入力にしたときのフルパスの扱いは、この確認では測っていません。
+単体テストで、既定では名前だけになり、指定したときだけフルパスが入ることを確認しています。
+
