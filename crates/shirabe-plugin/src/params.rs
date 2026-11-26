@@ -156,6 +156,30 @@ pub enum LevelMode {
     PpmIeee,
 }
 
+/// Meter arrangement shown by the editor. Variant IDs are stored in projects: never change
+/// them. Display-only, so it is not automatable.
+#[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutPreset {
+    /// The arrangement used before presets existed.
+    #[id = "standard"]
+    #[name = "Standard"]
+    Standard,
+    /// Peak and level stacked, with a larger scope and the read-out on the right.
+    #[id = "stereo"]
+    #[name = "Stereo"]
+    Stereo,
+}
+
+impl LayoutPreset {
+    /// The geometry preset of the same name.
+    pub fn geometry(self) -> shirabe_ui::layout::LayoutPreset {
+        match self {
+            Self::Standard => shirabe_ui::layout::LayoutPreset::Standard,
+            Self::Stereo => shirabe_ui::layout::LayoutPreset::Stereo,
+        }
+    }
+}
+
 /// All parameters of the plugin.
 #[derive(Params)]
 pub struct ShirabeParams {
@@ -227,6 +251,10 @@ pub struct ShirabeParams {
     /// the rotated mid/side Lissajous figure. Display-only, so it is not automatable.
     #[id = "scp_lr"]
     pub scope_view_lr: BoolParam,
+
+    /// Arrangement of the meter tiles. Display-only, so it is not automatable.
+    #[id = "lay_preset"]
+    pub layout_preset: EnumParam<LayoutPreset>,
 }
 
 impl Default for ShirabeParams {
@@ -336,6 +364,9 @@ impl Default for ShirabeParams {
             scope_auto_gain: BoolParam::new("Lissajous Auto Gain", false).non_automatable(),
 
             scope_view_lr: BoolParam::new("Scope L/R View", false).non_automatable(),
+
+            layout_preset: EnumParam::new("Layout Preset", LayoutPreset::Standard)
+                .non_automatable(),
         }
     }
 }
@@ -391,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn the_vectorscope_switch_is_opt_in_non_automatable_and_appended_last() {
+    fn the_vectorscope_switch_is_opt_in_non_automatable_and_keeps_its_index() {
         let params = ShirabeParams::default();
         assert!(!params.scope_view_lr.value());
         assert!(params
@@ -404,6 +435,29 @@ mod tests {
             .map(|(id, _, _)| id)
             .collect();
         // Appending keeps every host automation index already in use unchanged.
-        assert_eq!(ids.last().map(String::as_str), Some("scp_lr"));
+        let scp_lr = ids.iter().position(|id| id == "scp_lr").unwrap();
+        assert_eq!(scp_lr, ids.len() - 2);
+        assert_eq!(ids.last().map(String::as_str), Some("lay_preset"));
+    }
+
+    #[test]
+    fn layout_preset_is_a_non_automatable_setting_defaulting_to_standard() {
+        let params = ShirabeParams::default();
+        assert_eq!(params.layout_preset.value(), LayoutPreset::Standard);
+        assert!(params
+            .layout_preset
+            .flags()
+            .contains(ParamFlags::NON_AUTOMATABLE));
+        // The geometry enum lives in the UI crate and must stay in step with the stored one.
+        assert_eq!(
+            params.layout_preset.value().geometry(),
+            shirabe_ui::layout::LayoutPreset::Standard
+        );
+        let ids: Vec<String> = params
+            .param_map()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(ids.last().map(String::as_str), Some("lay_preset"));
     }
 }

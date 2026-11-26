@@ -105,4 +105,20 @@ mod tests {
         assert_eq!(save_params(&restored).get("scp_auto"), Some(&1.0));
         assert_eq!(save_params(&restored).get("scp_lr"), Some(&1.0));
     }
+
+    #[test]
+    fn the_layout_preset_survives_the_standalone_settings_roundtrip() {
+        let params = ShirabeParams::default();
+        // 0 = Standard, the default that old settings files fall back to.
+        assert_eq!(save_params(&params).get("lay_preset"), Some(&0.0));
+
+        load_params(&params, &BTreeMap::from([("lay_preset".to_owned(), 1.0)]));
+        let restored = ShirabeParams::default();
+        load_params(&restored, &save_params(&params));
+        assert_eq!(save_params(&restored).get("lay_preset"), Some(&1.0));
+        assert_eq!(
+            restored.layout_preset.value(),
+            shirabe_plugin::params::LayoutPreset::Stereo
+        );
+    }
 }

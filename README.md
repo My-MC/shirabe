@@ -5,7 +5,7 @@ Shirabe（調べ）は、放送や音楽制作で使われる各種メーター�
 VST3 / CLAP プラグインと、DAW なしで動くスタンドアロンアプリの両方として提供します。
 
 > [!NOTE]
-> 現在はフェーズ 2（ステレオ解析）までを実装しています。
+> 現在はフェーズ 2（ステレオ解析）までを実装し、フェーズ 3 の最初の版としてレイアウトプリセット（Standard / Stereo）を追加しています。
 > サンプルピーク、トゥルーピーク、VU、PPM、ラウドネス、リサージュ、L/R ベクタースコープ、ステレオ相関、左右バランスを表示できます。
 > 計画は [docs/roadmap.md](docs/roadmap.md)、各メーターが準拠する規格は [docs/standards.md](docs/standards.md) を参照してください。
 
@@ -29,6 +29,7 @@ VST3 / CLAP プラグインと、DAW なしで動くスタンドアロンアプ�
 | 相関・左右バランス | 直近 400 ms の相関を -1〜+1 で、音量差を優勢側と dB で表示 |
 | リサージュ | ステレオの L/R を 45° 回転した M/S 表示。±1 を 0 dBFS とする固定スケールと自動ゲイン（最大 +20 dB）の切り替え、0.3 秒の残光、クリップ表示、モノラル入力の明示 |
 | ベクタースコープ | L を横軸、R を縦軸に表示する X/Y 表示。リサージュと同じサンプルの別表示で、残光と自動ゲインを共用します。軸には L と R のラベルを表示 |
+| レイアウトプリセット | Standard（従来の配置）と Stereo（Peak と Level を左に縦積みし、中央のリサージュを大きく取る配置）を上部の「Layout」で切り替え。計測値とオーディオの経路は変わりません |
 | 目標値プリセット | ARIB TR-B32、EBU R 128、ATSC A/85、Spotify（-14 LUFS）、Apple Podcasts（-16 LKFS）、Custom（目標値・許容範囲・トゥルーピークを指定） |
 | リセット | ボタン、メーター部のダブルクリック、ホストの再生開始（オン / オフ可能） |
 | テストオシレーター | 入力をサイン波に置き換えて、メーターの校正や動作確認に使えます（初期状態はオフ） |
@@ -117,7 +118,7 @@ VST is a registered trademark of Steinberg Media Technologies GmbH.
 
 Shirabe Meter Suite is a pass-through, zero-latency audio metering suite delivered as VST3 and CLAP plug-ins and a standalone application.
 
-It is in early development: sample peak, true peak, VU/PPM, loudness and a Lissajous stereo display are implemented.
+It is in early development: sample peak, true peak, VU/PPM, loudness, a Lissajous stereo display and two meter layout presets are implemented.
 
 The DSP crate `shirabe-dsp` is MIT OR Apache-2.0; everything else is GPL-3.0-or-later.
 

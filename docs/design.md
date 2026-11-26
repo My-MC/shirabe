@@ -220,8 +220,16 @@ M/S 表示と L/R 表示は同じサンプルの別の見方で、新しい計�
 
 ## UI の構成
 
-- 画面をタイルに分割し、各タイルにメーターを 1 つ割り当てます（フェーズ 3）。
-- 分割の構造は木構造のデータとして持ち、JSON で保存します。
+- 画面をタイルに分割し、各タイルにメーターを 1 つ割り当てます。
+- タイルは Peak（サンプルピークとトゥルーピーク）、Level（VU / PPM）、Loudness（M / S のバー）、Readout（数値のラウドネス）、Scope（リサージュ / L/R ベクタースコープ）の 5 種類です。
+- 各タイルの位置は `shirabe-ui` の `layout` モジュールが決め、描画側は渡された矩形に描くだけです。計測値には触れません。
+- プリセットは Standard と Stereo の 2 つです。
+- Standard は従来の配置で、Peak、Level、Loudness の 3 列と、右列の Readout（上）と Scope（下）からなります。
+- Stereo はステレオ表示を優先する配置で、Peak と Level を左に縦積みし、中央に高さいっぱいの Scope、右に Loudness（上）と Readout（下）を置きます。
+- 切り替えは画面上部の「Layout」で行い、表示専用のパラメーター `lay_preset` で保存します。
+- 切り替えても計測、出力、オートメーションの値は変わりません。
+- ウィンドウが低いときは、数値のラウドネス表示を優先します。Standard では Scope を隠し、Stereo では Loudness のバーを先に隠します。
+- タイルを利用者が自由に組み替える画面、レイアウトのファイル保存、テーマのファイル読み込みは未実装です（[ロードマップ](roadmap.md)）。
 - テーマ（色、色分けの区切り、セグメントの形）はデータとして持ち、将来はファイルから読み込めるようにします。
 - メーターの描画部品は値を受け取って描くだけにし、音声処理の状態には触れません。
 
@@ -259,9 +267,13 @@ pub trait MeterView {
 | `osc_on` | Test Oscillator | オン / オフ | オフ |
 | `osc_lvl` | Oscillator Level | -60〜0 dBFS | -18 dBFS |
 | `osc_frq` | Oscillator Frequency | 20 Hz〜20 kHz | 1 kHz |
+| `lay_preset` | Layout Preset | Standard / Stereo | Standard |
 
-表示専用の `scp_trail`、`scp_auto`、`scp_lr` は自動化できません。
+表示専用の `scp_trail`、`scp_auto`、`scp_lr`、`lay_preset` は自動化できません。
 `scp_lr` をオンにすると、リサージュの代わりに L/R ベクタースコープを表示します。
+`lay_preset` は画面の配置だけを切り替えます。
+既存のパラメーター ID と順序は変えず、末尾に追加しています。
+プリセット名は配置の呼び名で、準拠する規格や放送用の推奨値ではありません。
 
 ## 対応プラットフォーム
 

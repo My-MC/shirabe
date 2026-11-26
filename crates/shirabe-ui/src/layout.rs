@@ -1,0 +1,227 @@
+//! Tile geometry for the meter view.
+//!
+//! The view is a set of tiles; a preset only decides where each tile goes. Splitting the
+//! geometry from the drawing keeps the arrangements testable without a window and lets a
+//! later tile tree replace the two built-in presets without touching the meter widgets.
+//!
+//! The Standard preset is the arrangement used before presets existed, so its numbers are
+//! pinned by tests: changing them moves meters under existing users.
+
+use crate::egui::{pos2, Rect};
+
+/// Horizontal gap between the bar sections.
+pub const SECTION_GAP: f32 = 14.0;
+/// Vertical gap between the loudness read-out and the scope.
+pub const COLUMN_GAP: f32 = 10.0;
+/// Width of the right-hand column holding the read-out and the scope.
+pub const COLUMN_WIDTH: f32 = 180.0;
+/// Smallest readable height of the scope.
+pub const MIN_SCOPE_HEIGHT: f32 = 96.0;
+/// Smallest readable width of the scope.
+pub const MIN_SCOPE_WIDTH: f32 = 80.0;
+/// The scope stops growing here so a tall window leaves the read-out room.
+pub const MAX_SCOPE_HEIGHT: f32 = COLUMN_WIDTH;
+/// Space for the heading, all seven loudness rows and the LRA stability note.
+pub const MIN_READOUT_HEIGHT: f32 = 80.0 + 7.0 * 19.0 + 14.0;
+/// Space for a loudness bar title, its read-outs, one usable bar and the caption.
+pub const MIN_LOUDNESS_HEIGHT: f32 = 110.0;
+
+/// A meter tile placed by the layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tile {
+    /// Sample peak and true-peak bars.
+    Peak,
+    /// VU or PPM bars (or needles).
+    Level,
+    /// Momentary and short-term loudness bars.
+    Loudness,
+    /// Numeric loudness read-out.
+    Readout,
+    /// Lissajous or L/R vectorscope view.
+    Scope,
+}
+
+/// A built-in arrangement.
+///
+/// The stored parameter carries its own enum (with nih-plug IDs); this one is the geometry
+/// side and has no plug-in dependency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutPreset {
+    /// Peak, level and loudness bars side by side, read-out above the scope on the right.
+    Standard,
+    /// Peak and level stacked on the left, a full-height scope in the middle and the
+    /// loudness bars above the read-out on the right.
+    Stereo,
+}
+
+/// One tile with the rectangle it occupies.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placement {
+    /// The tile.
+    pub tile: Tile,
+    /// Where it is drawn.
+    pub rect: Rect,
+}
+
+/// The tiles of one preset, in drawing order.
+#[derive(Clone, Debug, Default)]
+pub struct Arrangement {
+    placements: Vec<Placement>,
+}
+
+impl Arrangement {
+    fn place(&mut self, tile: Tile, rect: Rect) {
+        self.placements.push(Placement { tile, rect });
+    }
+
+    /// All placed tiles.
+    pub fn placements(&self) -> &[Placement] {
+        &self.placements
+    }
+
+    /// Rectangle of `tile`, if this arrangement shows it.
+    pub fn tile(&self, tile: Tile) -> Option<Rect> {
+        self.placements
+            .iter()
+            .find(|p| p.tile == tile)
+            .map(|p| p.rect)
+    }
+}
+
+/// Arranges `preset` inside `rect`.
+pub fn arrange(preset: LayoutPreset, rect: Rect) -> Arrangement {
+    match preset {
+        LayoutPreset::Standard => standard(rect),
+        LayoutPreset::Stereo => stereo(rect),
+    }
+}
+
+/// Peak, level and loudness sections in a row, with the read-out above the scope.
+fn standard(rect: Rect) -> Arrangement {
+    let meters_width = (rect.width() - COLUMN_WIDTH - 3.0 * SECTION_GAP).max(0.0);
+    let peak_width = meters_width * 0.38;
+    let level_width = meters_width * 0.37;
+    let lufs_width = meters_width - peak_width - level_width;
+
+    let mut x = rect.left();
+    let mut take = |w: f32| {
+        let r = Rect::from_min_max(pos2(x, rect.top()), pos2(x + w, rect.bottom()));
+        x += w + SECTION_GAP;
+        r
+    };
+    let peak = take(peak_width);
+    let level = take(level_width);
+    let lufs = take(lufs_width);
+    let column = take(COLUMN_WIDTH);
+
+    let mut arrangement = Arrangement::default();
+    arrangement.place(Tile::Peak, peak);
+    arrangement.place(Tile::Level, level);
+    arrangement.place(Tile::Loudness, lufs);
+    let (readout, scope) = split_column(column);
+    arrangement.place(Tile::Readout, readout);
+    if let Some(scope) = scope {
+        arrangement.place(Tile::Scope, scope);
+    }
+    arrangement
+}
+
+/// Splits the right-hand column into the loudness read-out (top) and the scope (bottom).
+///
+/// A column too short for both shows only the read-out.
+pub fn split_column(rect: Rect) -> (Rect, Option<Rect>) {
+    let height = rect.height();
+    if height < MIN_READOUT_HEIGHT + MIN_SCOPE_HEIGHT + COLUMN_GAP {
+        return (rect, None);
+    }
+    let scope_height = (height * 0.38)
+        .clamp(MIN_SCOPE_HEIGHT, MAX_SCOPE_HEIGHT)
+        .min(height - MIN_READOUT_HEIGHT - COLUMN_GAP);
+    let scope_top = rect.bottom() - scope_height;
+    let readout = Rect::from_min_max(rect.min, pos2(rect.right(), scope_top - COLUMN_GAP));
+    let scope = Rect::from_min_max(pos2(rect.left(), scope_top), rect.max);
+    (readout, Some(scope))
+}
+
+/// Peak and level stacked on the left, a full-height scope in the middle and the loudness
+/// bars above the read-out on the right.
+///
+/// The read-out keeps its minimum height; the loudness bars are dropped first when the
+/// window is too short for both, so the integrated value never loses rows.
+fn stereo(rect: Rect) -> Arrangement {
+    let inner = (rect.width() - COLUMN_WIDTH - 2.0 * SECTION_GAP).max(0.0);
+    let left_width = (inner * 0.40).clamp(120.0, 280.0).min(inner);
+    let scope_width = (inner - left_width).max(0.0);
+
+    let left = Rect::from_min_max(rect.min, pos2(rect.left() + left_width, rect.bottom()));
+    let scope = Rect::from_min_max(
+        pos2(left.right() + SECTION_GAP, rect.top()),
+        pos2(left.right() + SECTION_GAP + scope_width, rect.bottom()),
+    );
+    let column = Rect::from_min_max(pos2(scope.right() + SECTION_GAP, rect.top()), rect.max);
+
+    let mut arrangement = Arrangement::default();
+
+    // Split the left column down the middle; the level section keeps the remainder so a
+    // fractional height never leaves a one-pixel strip.
+    let half = ((left.height() - SECTION_GAP) * 0.5).max(0.0);
+    let peak = Rect::from_min_max(left.min, pos2(left.right(), left.top() + half));
+    let level = Rect::from_min_max(pos2(left.left(), peak.bottom() + SECTION_GAP), left.max);
+    arrangement.place(Tile::Peak, peak);
+    arrangement.place(Tile::Level, level);
+
+    if scope_width >= MIN_SCOPE_WIDTH && scope.height() >= MIN_SCOPE_HEIGHT {
+        arrangement.place(Tile::Scope, scope);
+    }
+
+    if column.height() >= MIN_READOUT_HEIGHT + SECTION_GAP + MIN_LOUDNESS_HEIGHT {
+        let loudness_height = column.height() - MIN_READOUT_HEIGHT - SECTION_GAP;
+        let loudness = Rect::from_min_max(
+            column.min,
+            pos2(column.right(), column.top() + loudness_height),
+        );
+        let readout = Rect::from_min_max(
+            pos2(column.left(), loudness.bottom() + SECTION_GAP),
+            column.max,
+        );
+        arrangement.place(Tile::Loudness, loudness);
+        arrangement.place(Tile::Readout, readout);
+    } else {
+        arrangement.place(Tile::Readout, column);
+    }
+    arrangement
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_column_without_room_keeps_the_read_out_only() {
+        let rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(COLUMN_WIDTH, 240.0));
+        let (readout, scope) = split_column(rect);
+        assert!(scope.is_none());
+        assert_eq!(readout, rect);
+    }
+
+    #[test]
+    fn the_scope_never_takes_height_needed_for_the_loudness_rows() {
+        for height in 296..400 {
+            let rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(COLUMN_WIDTH, height as f32));
+            let (readout, scope) = split_column(rect);
+            if let Some(scope) = scope {
+                assert!(
+                    readout.height() >= MIN_READOUT_HEIGHT,
+                    "read-out clipped at {height}"
+                );
+                assert!(scope.height() >= MIN_SCOPE_HEIGHT);
+            }
+        }
+        assert!(split_column(Rect::from_min_max(
+            pos2(0.0, 0.0),
+            pos2(COLUMN_WIDTH, 333.0)
+        ))
+        .1
+        .is_some());
+    }
+}

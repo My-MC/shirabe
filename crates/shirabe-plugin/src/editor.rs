@@ -1,10 +1,9 @@
 //! The plugin editor (also used by the standalone application).
 //!
-//! Layout: a header, then three bar sections side by side (sample / true peak, VU or PPM,
-//! loudness) with a right-hand column holding the numeric loudness panel above the Lissajous
-//! view, and the settings and test oscillator at the bottom.
-//! Scales and read-outs follow the documents listed in `docs/standards.md`; the Lissajous
-//! view is described in `docs/design.md`.
+//! Layout: a header, then the tiles of the selected preset (see [`shirabe_ui::layout`]), then
+//! the settings and the test oscillator at the bottom.
+//! Scales and read-outs follow the documents listed in `docs/standards.md`; the tile
+//! arrangement and the Lissajous view are described in `docs/design.md`.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -16,6 +15,7 @@ use shirabe_ui::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Painter, Rect, RichText, Sense,
     Stroke,
 };
+use shirabe_ui::layout::{arrange, Tile};
 use shirabe_ui::scope::{
     draw as draw_scope, is_clipped, AutoGain, ScopePlane, ScopeRender, Trail, MAX_POINTS,
     TRAIL_CAPACITY, TRAIL_SECONDS,
@@ -25,7 +25,7 @@ use shirabe_ui::{
 };
 
 use crate::params::{
-    LevelMode, LoudnessScale, LoudnessTarget, LoudnessUnit, ShirabeParams, TargetSpec,
+    LayoutPreset, LevelMode, LoudnessScale, LoudnessTarget, LoudnessUnit, ShirabeParams, TargetSpec,
 };
 use crate::shared::SharedMeters;
 
@@ -38,17 +38,6 @@ const BAR_GAP: f32 = 5.0;
 const CONTROLS_HEIGHT: f32 = 92.0;
 /// Extra height of the custom-target row.
 const CUSTOM_ROW_HEIGHT: f32 = 24.0;
-const SECTION_GAP: f32 = 14.0;
-/// Width of the right-hand column holding the loudness panel and the Lissajous view.
-const COLUMN_WIDTH: f32 = 180.0;
-/// Gap between the loudness panel and the Lissajous view.
-const COLUMN_GAP: f32 = 10.0;
-/// Smallest readable height of the Lissajous square.
-const MIN_SCOPE_HEIGHT: f32 = 96.0;
-/// The Lissajous view stops growing here so a tall window leaves the panel room.
-const MAX_SCOPE_HEIGHT: f32 = COLUMN_WIDTH;
-/// Space for the heading, all seven loudness rows and the LRA stability note.
-const MIN_PANEL_HEIGHT: f32 = 80.0 + 7.0 * 19.0 + 14.0;
 
 /// Alignment level in dBFS (EBU R 68): TEST on the EBU and IEEE scales, mark 4 on the BBC scale.
 const ALIGNMENT_DBFS: f32 = -18.0;
@@ -107,7 +96,7 @@ pub fn draw(
     theme: &Theme,
     scope: &mut ScopeView,
 ) {
-    header(ui, shared, theme);
+    header(ui, params, shared, setter, theme);
     ui.separator();
 
     let controls = if params.loudness_target.value() == LoudnessTarget::Custom {
@@ -141,7 +130,13 @@ fn balance_text(value: Option<f32>) -> String {
     }
 }
 
-fn header(ui: &mut egui::Ui, shared: &SharedMeters, theme: &Theme) {
+fn header(
+    ui: &mut egui::Ui,
+    params: &ShirabeParams,
+    shared: &SharedMeters,
+    setter: &ParamSetter,
+    theme: &Theme,
+) {
     ui.horizontal(|ui| {
         ui.label(
             RichText::new("Shirabe")
@@ -180,6 +175,18 @@ fn header(ui: &mut egui::Ui, shared: &SharedMeters, theme: &Theme) {
             .color(theme.text),
         )
         .on_hover_text("Left/right energy difference over 400 ms; shows the louder side");
+
+        ui.separator();
+        ui.label(RichText::new("Layout").color(theme.text_dim))
+            .on_hover_text("Meter arrangement; the measurement and its values do not change");
+        combo(
+            ui,
+            "layout-preset",
+            &params.layout_preset,
+            setter,
+            &[LayoutPreset::Standard, LayoutPreset::Stereo],
+            layout_preset_name,
+        );
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui
@@ -351,56 +358,31 @@ fn meters(
         .clamp(1, crate::shared::MAX_CHANNELS);
     let target = params.target_spec();
 
-    // The right-hand column holds the numeric loudness panel above the Lissajous view; the
-    // bar sections share the remaining width.
-    let meters_width = (rect.width() - COLUMN_WIDTH - 3.0 * SECTION_GAP).max(0.0);
-    let peak_width = meters_width * 0.38;
-    let level_width = meters_width * 0.37;
-    let lufs_width = meters_width - peak_width - level_width;
-
-    let mut x = rect.left();
-    let mut take = |w: f32| {
-        let r = Rect::from_min_max(pos2(x, rect.top()), pos2(x + w, rect.bottom()));
-        x += w + SECTION_GAP;
-        r
-    };
-    let peak_rect = take(peak_width);
-    let level_rect = take(level_width);
-    let lufs_rect = take(lufs_width);
-    let column_rect = take(COLUMN_WIDTH);
-
-    peak_section(&painter, peak_rect, shared, theme, channels, target);
-    level_section(
-        &painter,
-        level_rect,
-        shared,
-        theme,
-        channels,
-        (params.level_mode.value(), params.vu_needle.value()),
-    );
+    // The preset decides where the tiles go; the sections only draw into their rectangle.
+    let arrangement = arrange(params.layout_preset.value().geometry(), rect);
+    if let Some(peak_rect) = arrangement.tile(Tile::Peak) {
+        peak_section(&painter, peak_rect, shared, theme, channels, target);
+    }
+    if let Some(level_rect) = arrangement.tile(Tile::Level) {
+        level_section(
+            &painter,
+            level_rect,
+            shared,
+            theme,
+            channels,
+            (params.level_mode.value(), params.vu_needle.value()),
+        );
+    }
     let view = LoudnessView::new(params);
-    loudness_section(&painter, lufs_rect, shared, theme, &view);
-    let (panel_rect, scope_rect) = split_column(column_rect);
-    loudness_panel(&painter, panel_rect, shared, theme, &view, channels);
-    if let Some(scope_rect) = scope_rect {
+    if let Some(lufs_rect) = arrangement.tile(Tile::Loudness) {
+        loudness_section(&painter, lufs_rect, shared, theme, &view);
+    }
+    if let Some(panel_rect) = arrangement.tile(Tile::Readout) {
+        loudness_panel(&painter, panel_rect, shared, theme, &view, channels);
+    }
+    if let Some(scope_rect) = arrangement.tile(Tile::Scope) {
         scope_section(&painter, scope_rect, shared, params, theme, scope, now);
     }
-}
-
-/// Splits the right-hand column into the loudness panel (top) and the Lissajous view
-/// (bottom). A column too short for both shows only the panel.
-fn split_column(rect: Rect) -> (Rect, Option<Rect>) {
-    let height = rect.height();
-    if height < MIN_PANEL_HEIGHT + MIN_SCOPE_HEIGHT + COLUMN_GAP {
-        return (rect, None);
-    }
-    let scope_height = (height * 0.38)
-        .clamp(MIN_SCOPE_HEIGHT, MAX_SCOPE_HEIGHT)
-        .min(height - MIN_PANEL_HEIGHT - COLUMN_GAP);
-    let scope_top = rect.bottom() - scope_height;
-    let panel = Rect::from_min_max(rect.min, pos2(rect.right(), scope_top - COLUMN_GAP));
-    let scope = Rect::from_min_max(pos2(rect.left(), scope_top), rect.max);
-    (panel, Some(scope))
 }
 
 /// Draws the Lissajous view from the captured stereo frames.
@@ -1317,6 +1299,13 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
     });
 }
 
+fn layout_preset_name(preset: LayoutPreset) -> &'static str {
+    match preset {
+        LayoutPreset::Standard => "Standard",
+        LayoutPreset::Stereo => "Stereo",
+    }
+}
+
 fn level_mode_name(m: LevelMode) -> &'static str {
     match m {
         LevelMode::Vu => "VU",
@@ -1410,38 +1399,5 @@ mod tests {
         assert_eq!(balance_text(Some(0.6)), "R 6.0 dB");
         assert_eq!(balance_text(Some(-1.0)), "L only");
         assert_eq!(balance_text(Some(1.0)), "R only");
-    }
-
-    fn column(height: f32) -> Rect {
-        Rect::from_min_max(pos2(0.0, 0.0), pos2(COLUMN_WIDTH, height))
-    }
-
-    #[test]
-    fn the_scope_sits_below_the_loudness_panel() {
-        let (panel, scope) = split_column(column(400.0));
-        let scope = scope.expect("a 400 px column shows the scope");
-        assert_eq!(panel.height(), 238.0);
-        assert_eq!(scope.top(), 248.0);
-        assert_eq!(scope.bottom(), 400.0);
-        assert_eq!(scope.width(), COLUMN_WIDTH);
-    }
-
-    #[test]
-    fn scope_never_takes_height_needed_for_loudness_rows_and_lra_note() {
-        for height in 296..400 {
-            let (panel, scope) = split_column(column(height as f32));
-            if let Some(scope) = scope {
-                assert!(panel.height() >= 227.0, "loudness rows clipped at {height}");
-                assert!(scope.height() >= MIN_SCOPE_HEIGHT);
-            }
-        }
-        assert!(split_column(column(333.0)).1.is_some());
-    }
-
-    #[test]
-    fn a_short_column_keeps_the_loudness_panel_only() {
-        let (panel, scope) = split_column(column(240.0));
-        assert!(scope.is_none());
-        assert_eq!(panel, column(240.0));
     }
 }

@@ -214,6 +214,38 @@ ffmpeg -f lavfi -i "aevalsrc=0.5*sin(2*PI*1000*t)|-0.5*sin(2*PI*1000*t):s=48000:
 | 設定の保存 | `standalone.json` の `scp_lr` が 0 と 1 で保存され、再起動後も復元 |
 | 最小サイズ（640×440） | 「L/R」「Trail」「Auto」が欠けずに表示され、ラウドネスの行も残る |
 
+### レイアウトプリセットの確認
+
+上部の「Layout」で Standard と Stereo を切り替え、計測を止めずに配置だけが変わることを確認します。
+テストオシレーターを -18 dBFS で有効にすると、VU が 0 VU、Integrated が -18.0 LKFS のまま推移します。
+
+| 操作 | 期待される表示 |
+|---|---|
+| Standard で起動 | Peak、Level、Loudness が横に並び、右列の上に数値のラウドネス、下にリサージュ |
+| Stereo に切り替え | Peak と Level が左に縦積み、中央に高さいっぱいのリサージュ、右に Loudness と数値のラウドネス |
+| Standard に戻す | 元の配置に戻り、Integrated と Time は切り替え前から続いている |
+| 640×440 に縮小（Standard） | リサージュは隠れ、数値のラウドネスの全行と Time、Target は残る |
+| 640×440 に縮小（Stereo） | Loudness のバーは隠れ、数値のラウドネスの全行と Time、Target は残る。リサージュは表示される |
+| 設定の保存 | `standalone.json` の `lay_preset` が 0（Standard）と 1（Stereo）で保存され、再起動後も復元される |
+
+2026-11-26 に Linux（Xvfb :99、ALSA、Source: None、テストオシレーター -18 dBFS）のスタンドアロンアプリで確認した結果は次のとおりです。
+
+| 項目 | 結果 |
+|---|---|
+| Standard → Stereo → Standard | 配置が切り替わり、Integrated は -18.0 LKFS のまま、Time は 0:59 → 1:35 と進んだ |
+| Stereo の配置 | Peak が左上、VU が左下、リサージュが中央、Loudness の M / S バーと数値のラウドネスが右に並んだ |
+| 640×440（Standard） | リサージュは消え、Integrated、LRA、PLR、M max、S max、TP max、Time、Target の全行が表示された |
+| 640×440（Stereo） | Loudness のバーは消え、数値のラウドネスの全行とリサージュが表示された |
+| 上部の操作 | 640×440 でも「Layout」、Pause、Reset、および Level 行の L/R、Trail、Auto が欠けずに表示された |
+| 設定の保存 | `lay_preset` が 1.0 → 0.0 → 1.0 と保存され、再起動後に Stereo で起動した |
+| Linux ホスト（`tools/host-tests/run.sh`） | clap-validator 44 件（34 件成功、10 件スキップ、失敗 0）、pluginval strictness 5（エディターを含む）が成功、Ardour のパススルーがビット一致 |
+
+`shirabe-ui` の `layout` モジュールは、タイルの重なりと画面外へのはみ出しを自動テストで確認します。
+
+```sh
+cargo test -p shirabe-ui --test layout_presets
+```
+
 ## GPU のない環境での動作
 
 エディターは OpenGL 3.2 で描画します。
