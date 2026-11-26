@@ -18,7 +18,8 @@ use shirabe_ui::egui::{
     Stroke,
 };
 use shirabe_ui::scope::{
-    draw as draw_scope, AutoGain, ScopeRender, Trail, MAX_POINTS, TRAIL_CAPACITY, TRAIL_SECONDS,
+    draw as draw_scope, is_clipped, AutoGain, ScopeRender, Trail, MAX_POINTS, TRAIL_CAPACITY,
+    TRAIL_SECONDS,
 };
 use shirabe_ui::{
     draw_level_bar, draw_marker, draw_scale_labels, format_db, format_lufs, MeterScale, Theme, Zone,
@@ -391,6 +392,7 @@ fn scope_section(
         gain_db: view.gain_db(),
         holding: view.holding(),
         mono: view.mono(),
+        clipped: view.clipped(),
     };
     draw_scope(painter, rect, &render, theme);
 }
@@ -413,10 +415,10 @@ pub struct ScopeView {
     raw: Vec<(f32, f32)>,
     /// New mid/side points after the display gain, for this frame.
     fresh: Vec<(f32, f32)>,
-    fresh_len: usize,
-    /// Newest mid/side points after the display gain, used when the trail is off.
+    /// Newest trace after display gain, retained while no fresh samples arrive.
     latest: Vec<(f32, f32)>,
     latest_len: usize,
+    clipped: bool,
     new_samples: usize,
     gain_db: f32,
     holding: bool,
@@ -436,9 +438,9 @@ impl ScopeView {
             gain: AutoGain::new(),
             raw: vec![(0.0, 0.0); TRAIL_CAPACITY],
             fresh: vec![(0.0, 0.0); TRAIL_CAPACITY],
-            fresh_len: 0,
             latest: vec![(0.0, 0.0); MAX_POINTS],
             latest_len: 0,
+            clipped: false,
             new_samples: 0,
             gain_db: 0.0,
             holding: false,
@@ -484,6 +486,8 @@ impl ScopeView {
         }
         if restart {
             self.trail.clear();
+            self.latest_len = 0;
+            self.clipped = false;
             self.gain.reset();
             self.epoch = epoch;
             self.last_trail = Some(trail_on);
@@ -492,8 +496,6 @@ impl ScopeView {
             self.cursor = 0;
         }
 
-        self.fresh_len = 0;
-        self.latest_len = 0;
         self.new_samples = 0;
         self.gain_db = if auto { self.gain.gain_db() } else { 0.0 };
         self.holding = auto;
@@ -501,6 +503,8 @@ impl ScopeView {
         if channels < 2 {
             self.mono = true;
             self.trail.clear();
+            self.latest_len = 0;
+            self.clipped = false;
             self.gain.reset();
             self.gain_db = 0.0;
             self.holding = auto;
@@ -511,12 +515,17 @@ impl ScopeView {
         self.mono = false;
 
         let (count, cursor) = shared.scope.read_since(self.cursor, &mut self.raw);
+        if shared.scope.epoch() != epoch {
+            return;
+        }
         self.cursor = cursor;
         self.new_samples = count;
         for (index, &(left, right)) in self.raw[..count].iter().enumerate() {
             self.fresh[index] = mid_side(left, right);
         }
-        self.fresh_len = count;
+        if count > 0 && trail_on {
+            self.clipped = is_clipped(&self.fresh[..count]);
+        }
 
         // The automatic gain only moves when new audio arrives; a paused source holds the
         // last scale instead of winding up on the frozen samples.
@@ -533,27 +542,35 @@ impl ScopeView {
         self.holding = auto && (self.gain.is_holding() || count == 0);
 
         if trail_on {
+            if count > 0 {
+                let start = count.saturating_sub(MAX_POINTS);
+                self.latest_len = count - start;
+                self.latest[..self.latest_len].copy_from_slice(&self.fresh[start..count]);
+            }
             for &(mid, side) in &self.fresh[..count] {
                 self.trail.push(mid, side, now);
             }
             self.trail.prune(now, TRAIL_SECONDS);
         } else {
             let count = shared.scope.read_latest(&mut self.raw[..MAX_POINTS]);
+            self.clipped = false;
             for (index, &(left, right)) in self.raw[..count].iter().enumerate() {
                 let (mid, side) = mid_side(left, right);
+                self.clipped |= is_clipped(&[(mid, side)]);
                 self.latest[index] = (mid * factor, side * factor);
             }
             self.latest_len = count;
         }
     }
 
-    /// Points to draw brightly: the new frames with the trail on, the newest window without.
+    /// Most recent trace, not including the fading history.
     pub fn points(&self) -> &[(f32, f32)] {
-        if self.last_trail == Some(true) {
-            &self.fresh[..self.fresh_len]
-        } else {
-            &self.latest[..self.latest_len]
-        }
+        &self.latest[..self.latest_len]
+    }
+
+    /// Whether unscaled mid/side samples exceeded full scale.
+    pub fn clipped(&self) -> bool {
+        self.clipped
     }
 
     /// The fading history (empty while the trail is off).

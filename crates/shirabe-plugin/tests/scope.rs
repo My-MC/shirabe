@@ -138,19 +138,21 @@ fn a_paused_source_does_not_repeat_the_same_trace_into_the_trail() {
     let mut view = ScopeView::new();
     view.update(&shared, 2, 0.0, true, false);
     assert!(!view.trail().is_empty());
+    let frozen = view.points().to_vec();
+    assert!(!frozen.is_empty());
     let after_audio = view.trail().len();
 
     // No new audio blocks arrive (the host is paused), so the same captured frames must not
     // be appended again.
     view.update(&shared, 2, 2.0 / 60.0, true, false);
     assert_eq!(view.new_samples(), 0);
-    assert!(view.points().is_empty());
+    assert_eq!(view.points(), frozen);
     assert_eq!(view.trail().len(), after_audio);
 
-    // The retained points fade out with time and then disappear.
+    // The trail fades out; the latest trace stays visible.
     view.update(&shared, 2, TRAIL_SECONDS as f64 + 1.0, true, false);
     assert!(view.trail().is_empty());
-    assert!(view.points().is_empty());
+    assert_eq!(view.points(), frozen);
 }
 
 #[test]
@@ -287,4 +289,26 @@ fn turning_the_trail_off_stops_appending_history() {
     view.update(&shared, 2, 1.0 / 60.0, false, false);
     assert!(view.trail().is_empty());
     assert!(!view.points().is_empty());
+}
+
+#[test]
+fn display_gain_does_not_report_a_legal_signal_as_clipped() {
+    let (_, shared) = engine(2);
+    let mut view = ScopeView::new();
+    shared.scope.push(&[0.01; 256], &[0.01; 256]);
+    view.update(&shared, 2, 0.0, true, true);
+    for step in 1..60 {
+        shared.scope.push(&[0.01; 256], &[0.01; 256]);
+        view.update(&shared, 2, f64::from(step) / 60.0, true, true);
+    }
+    shared.scope.push(&[0.5; 256], &[0.5; 256]);
+    view.update(&shared, 2, 1.0, true, true);
+    assert!(
+        shirabe_ui::scope::is_clipped(view.points()),
+        "probe must exceed display bounds"
+    );
+    assert!(!view.clipped());
+    shared.scope.push(&[1.25; 256], &[1.25; 256]);
+    view.update(&shared, 2, 1.02, true, true);
+    assert!(view.clipped());
 }

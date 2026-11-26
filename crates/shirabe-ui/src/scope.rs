@@ -317,6 +317,8 @@ pub struct ScopeRender<'a> {
     /// Mono input: no figure is drawn because a duplicated channel would suggest perfect
     /// correlation.
     pub mono: bool,
+    /// True when the unscaled signal exceeded the fixed M/S range.
+    pub clipped: bool,
 }
 
 /// Draws the Lissajous panel in `rect`.
@@ -335,7 +337,7 @@ pub fn draw(painter: &Painter, rect: Rect, view: &ScopeRender<'_>, theme: &Theme
     }
     let geometry = ScopeGeometry::new(body);
     let square = geometry.square();
-    let clipped = !view.mono && is_clipped(view.points);
+    let clipped = !view.mono && view.clipped;
 
     painter.rect_filled(square, 3.0, theme.panel);
     let grid = theme.text_dim.gamma_multiply(0.35);
