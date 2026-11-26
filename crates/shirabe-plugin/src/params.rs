@@ -180,6 +180,39 @@ impl LayoutPreset {
     }
 }
 
+/// Interface language. Variant IDs are stored in projects and standalone.json: never
+/// change them. Display-only, so it is not automatable.
+#[derive(Enum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiLanguage {
+    /// English, the default.
+    #[id = "en"]
+    #[name = "English"]
+    #[default]
+    English,
+    /// Japanese.
+    #[id = "ja"]
+    #[name = "Japanese"]
+    Japanese,
+}
+
+impl UiLanguage {
+    /// The text catalogue language of the same name.
+    pub fn lang(self) -> shirabe_ui::i18n::Lang {
+        match self {
+            Self::English => shirabe_ui::i18n::Lang::English,
+            Self::Japanese => shirabe_ui::i18n::Lang::Japanese,
+        }
+    }
+
+    /// The stored setting for a catalogue language.
+    pub fn from_lang(lang: shirabe_ui::i18n::Lang) -> Self {
+        match lang {
+            shirabe_ui::i18n::Lang::English => Self::English,
+            shirabe_ui::i18n::Lang::Japanese => Self::Japanese,
+        }
+    }
+}
+
 /// All parameters of the plugin.
 #[derive(Params)]
 pub struct ShirabeParams {
@@ -255,6 +288,11 @@ pub struct ShirabeParams {
     /// Arrangement of the meter tiles. Display-only, so it is not automatable.
     #[id = "lay_preset"]
     pub layout_preset: EnumParam<LayoutPreset>,
+
+    /// Interface language. Display-only, so it is not automatable. Appended after every
+    /// older parameter so the host automation indices already in use do not move.
+    #[id = "ui_lang"]
+    pub ui_language: EnumParam<UiLanguage>,
 }
 
 impl Default for ShirabeParams {
@@ -367,11 +405,18 @@ impl Default for ShirabeParams {
 
             layout_preset: EnumParam::new("Layout Preset", LayoutPreset::Standard)
                 .non_automatable(),
+
+            ui_language: EnumParam::new("UI Language", UiLanguage::English).non_automatable(),
         }
     }
 }
 
 impl ShirabeParams {
+    /// The text catalogue for the current setting and the available glyphs.
+    pub fn text(&self, japanese_available: bool) -> shirabe_ui::i18n::Text {
+        shirabe_ui::i18n::Text::new(self.ui_language.value().lang(), japanese_available)
+    }
+
     /// The selected target, with the custom values applied when `Custom` is selected.
     pub fn target_spec(&self) -> TargetSpec {
         let preset = self.loudness_target.value();
@@ -436,8 +481,46 @@ mod tests {
             .collect();
         // Appending keeps every host automation index already in use unchanged.
         let scp_lr = ids.iter().position(|id| id == "scp_lr").unwrap();
-        assert_eq!(scp_lr, ids.len() - 2);
-        assert_eq!(ids.last().map(String::as_str), Some("lay_preset"));
+        assert_eq!(scp_lr, ids.len() - 3);
+        assert_eq!(ids[ids.len() - 2], "lay_preset");
+        assert_eq!(ids.last().map(String::as_str), Some("ui_lang"));
+    }
+
+    #[test]
+    fn ui_language_is_english_by_default_non_automatable_and_appended() {
+        let params = ShirabeParams::default();
+        assert_eq!(params.ui_language.value(), UiLanguage::English);
+        assert!(params
+            .ui_language
+            .flags()
+            .contains(ParamFlags::NON_AUTOMATABLE));
+        // The stored variant ids are permanent: projects and standalone.json hold them.
+        assert_eq!(UiLanguage::ids(), Some(&["en", "ja"][..]));
+        let ids: Vec<String> = params
+            .param_map()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(ids.last().map(String::as_str), Some("ui_lang"));
+        // Every older parameter kept its position; the new ID is only appended.
+        assert_eq!(ids[ids.len() - 2], "lay_preset");
+    }
+
+    #[test]
+    fn the_text_catalogue_follows_the_setting_and_the_available_glyphs() {
+        let params = ShirabeParams::default();
+        unsafe {
+            params
+                .ui_language
+                .as_ptr()
+                .set_normalized_value(params.ui_language.preview_normalized(UiLanguage::Japanese));
+        }
+        assert_eq!(params.text(true).lang(), shirabe_ui::i18n::Lang::Japanese);
+        assert_eq!(params.text(true).reset(), "リセット");
+        // Without a CJK font the stored preference is kept but English is drawn.
+        assert_eq!(params.ui_language.value(), UiLanguage::Japanese);
+        assert_eq!(params.text(false).lang(), shirabe_ui::i18n::Lang::English);
+        assert_eq!(params.text(false).reset(), "Reset");
     }
 
     #[test]
@@ -458,6 +541,7 @@ mod tests {
             .into_iter()
             .map(|(id, _, _)| id)
             .collect();
-        assert_eq!(ids.last().map(String::as_str), Some("lay_preset"));
+        assert_eq!(ids[ids.len() - 2], "lay_preset");
+        assert_eq!(ids.last().map(String::as_str), Some("ui_lang"));
     }
 }

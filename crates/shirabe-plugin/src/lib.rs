@@ -15,6 +15,7 @@ use nih_plug::prelude::*;
 mod denormal;
 pub mod editor;
 pub mod engine;
+pub mod fonts;
 pub mod params;
 pub mod shared;
 

@@ -121,4 +121,53 @@ mod tests {
             shirabe_plugin::params::LayoutPreset::Stereo
         );
     }
+
+    #[test]
+    fn a_settings_map_without_a_language_keeps_the_english_default() {
+        use shirabe_plugin::params::UiLanguage;
+        let params = ShirabeParams::default();
+        // The shape of a standalone.json written before `ui_lang` existed.
+        let old = BTreeMap::from([
+            ("lay_preset".to_owned(), 1.0),
+            ("lvl_mode".to_owned(), 2.0),
+            ("ld_tgt".to_owned(), 1.0),
+        ]);
+        load_params(&params, &old);
+        assert_eq!(params.ui_language.value(), UiLanguage::English);
+        // The older values still load; only the new ID is absent.
+        assert_eq!(
+            params.layout_preset.value(),
+            shirabe_plugin::params::LayoutPreset::Stereo
+        );
+    }
+
+    #[test]
+    fn the_language_roundtrips_and_changes_nothing_else() {
+        use shirabe_plugin::params::UiLanguage;
+        let params = ShirabeParams::default();
+        load_params(
+            &params,
+            &BTreeMap::from([
+                // The stored value is the variant index: 0 = English, 1 = Japanese.
+                ("ui_lang".to_owned(), 1.0),
+                ("lay_preset".to_owned(), 1.0),
+                ("osc_on".to_owned(), 1.0),
+            ]),
+        );
+        assert_eq!(params.ui_language.value(), UiLanguage::Japanese);
+
+        let restored = ShirabeParams::default();
+        load_params(&restored, &save_params(&params));
+        assert_eq!(restored.ui_language.value(), UiLanguage::Japanese);
+        // A view-only setting must not disturb the layout, the oscillator or the target.
+        assert_eq!(
+            restored.layout_preset.value(),
+            shirabe_plugin::params::LayoutPreset::Stereo
+        );
+        assert!(restored.osc_enabled.value());
+        assert_eq!(
+            restored.loudness_target.value(),
+            params.loudness_target.value()
+        );
+    }
 }

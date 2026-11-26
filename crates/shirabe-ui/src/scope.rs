@@ -10,6 +10,7 @@ use shirabe_dsp::scope::mid_side;
 use crate::egui::{
     pos2, vec2, Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind,
 };
+use crate::i18n::Text;
 use crate::theme::Theme;
 
 /// Which pair of stereo coordinates the scope plots.
@@ -368,6 +369,8 @@ pub struct ScopeRender<'a> {
     pub mono: bool,
     /// True when the unscaled signal exceeded the fixed range of the selected plane.
     pub clipped: bool,
+    /// Text catalogue of the interface language.
+    pub text: Text,
 }
 
 /// Draws the scope panel in `rect`.
@@ -446,14 +449,14 @@ pub fn draw(painter: &Painter, rect: Rect, view: &ScopeRender<'_>, theme: &Theme
         painter.text(
             centre,
             Align2::CENTER_CENTER,
-            "MONO",
+            view.text.mono_label(),
             FontId::proportional(12.0),
             theme.text_dim,
         );
         painter.text(
             pos2(centre.x, centre.y + 15.0),
             Align2::CENTER_CENTER,
-            "no stereo content",
+            view.text.no_stereo_content(),
             FontId::proportional(9.0),
             theme.text_dim.gamma_multiply(0.8),
         );

@@ -15,6 +15,7 @@ use shirabe_ui::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Painter, Rect, RichText, Sense,
     Stroke,
 };
+use shirabe_ui::i18n::{Lang, Text};
 use shirabe_ui::layout::{arrange, TileId};
 use shirabe_ui::scope::{
     draw as draw_scope, is_clipped, AutoGain, ScopePlane, ScopeRender, Trail, MAX_POINTS,
@@ -26,7 +27,8 @@ use shirabe_ui::{
 };
 
 use crate::params::{
-    LayoutPreset, LevelMode, LoudnessScale, LoudnessTarget, LoudnessUnit, ShirabeParams, TargetSpec,
+    LayoutPreset, LevelMode, LoudnessScale, LoudnessTarget, LoudnessUnit, ShirabeParams,
+    TargetSpec, UiLanguage,
 };
 use crate::shared::SharedMeters;
 
@@ -56,6 +58,9 @@ pub(crate) fn create(
         EditorState {
             theme: Theme::dark(),
             scope: ScopeView::new(),
+            japanese_font_installed: false,
+            japanese: None,
+            japanese_check_pending: false,
         },
         |ctx, state| {
             let mut visuals = egui::Visuals::dark();
@@ -67,8 +72,20 @@ pub(crate) fn create(
             // Meters move continuously, so redraw every frame while the editor is open.
             ctx.request_repaint();
 
+            state.prepare_japanese(ctx, params.ui_language.value());
+            let text = params.text(state.japanese(ctx));
+            let japanese_attempted = state.japanese_font_installed;
             plugin_window(ctx, &params, |ui| {
-                draw(ui, &params, &shared, setter, &state.theme, &mut state.scope);
+                draw(
+                    ui,
+                    &params,
+                    &shared,
+                    setter,
+                    &state.theme,
+                    &mut state.scope,
+                    text,
+                    japanese_attempted,
+                );
             });
         },
     )
@@ -88,10 +105,52 @@ fn plugin_window(ctx: &egui::Context, params: &ShirabeParams, content: impl FnOn
 struct EditorState {
     theme: Theme,
     scope: ScopeView,
+    /// Whether installing the CJK fallback has been attempted for this context.
+    japanese_font_installed: bool,
+    /// Whether the current fonts cover the Japanese catalogue (cached per context).
+    japanese: Option<bool>,
+    /// Fonts installed in this frame are used from the next frame on, so the coverage
+    /// check waits one frame instead of caching the old fonts' answer.
+    japanese_check_pending: bool,
+}
+
+impl EditorState {
+    /// Installs the system CJK fallback the first time the Japanese interface is selected.
+    ///
+    /// An English session never loads the font, so the plug-in does not hold a large CJK
+    /// font in memory unless it is used.
+    fn prepare_japanese(&mut self, ctx: &egui::Context, requested: UiLanguage) {
+        if requested != UiLanguage::Japanese || self.japanese_font_installed {
+            return;
+        }
+        self.japanese_font_installed = true;
+        // egui applies `set_fonts` at the next frame, so the check must wait.
+        if crate::fonts::install(ctx) {
+            self.japanese = None;
+            self.japanese_check_pending = true;
+        } else {
+            self.japanese = Some(false);
+        }
+    }
+
+    /// Whether this editor can draw Japanese.
+    fn japanese(&mut self, ctx: &egui::Context) -> bool {
+        if self.japanese_check_pending {
+            // This frame still draws with the fonts from before the installation.
+            self.japanese_check_pending = false;
+            return false;
+        }
+        *self
+            .japanese
+            .get_or_insert_with(|| crate::fonts::has_japanese(ctx))
+    }
 }
 
 /// Draws the whole meter view (header, meters and settings). Used by the plugin editor and by
 /// the standalone application.
+///
+/// `text` carries the interface language; it is view-only and never changes the measurement.
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     ui: &mut egui::Ui,
     params: &ShirabeParams,
@@ -99,8 +158,10 @@ pub fn draw(
     setter: &ParamSetter,
     theme: &Theme,
     scope: &mut ScopeView,
+    text: Text,
+    japanese_attempted: bool,
 ) {
-    header(ui, params, shared, setter, theme);
+    header(ui, params, shared, setter, theme, text, japanese_attempted);
     ui.separator();
 
     let controls = if params.loudness_target.value() == LoudnessTarget::Custom {
@@ -109,11 +170,11 @@ pub fn draw(
         CONTROLS_HEIGHT
     };
     let height = (ui.available_height() - controls).max(120.0);
-    meters(ui, params, shared, theme, height, scope);
+    meters(ui, params, shared, theme, height, scope, text);
 
     ui.separator();
-    settings(ui, params, setter);
-    oscillator_controls(ui, params, setter, theme);
+    settings(ui, params, setter, text);
+    oscillator_controls(ui, params, setter, theme, text);
 }
 
 fn correlation_text(value: Option<f32>) -> String {
@@ -124,13 +185,30 @@ fn correlation_text(value: Option<f32>) -> String {
     }
 }
 
-fn balance_text(value: Option<f32>) -> String {
+fn balance_text(text: Text, value: Option<f32>) -> String {
     match value.map(shirabe_dsp::stereo::balance_to_db) {
-        Some(d) if d == f32::NEG_INFINITY => "L only".into(),
-        Some(d) if d == f32::INFINITY => "R only".into(),
+        Some(d) if d == f32::NEG_INFINITY => ChannelSide::Left.for_text(text).to_owned(),
+        Some(d) if d == f32::INFINITY => ChannelSide::Right.for_text(text).to_owned(),
         Some(d) if d.abs() < 0.05 => "0.0 dB".into(),
         Some(d) => format!("{} {:.1} dB", if d < 0.0 { "L" } else { "R" }, d.abs()),
         None => "--".into(),
+    }
+}
+
+/// A one-sided stereo signal; the channel letter stays `L` or `R` in both languages.
+enum ChannelSide {
+    Left,
+    Right,
+}
+
+impl ChannelSide {
+    fn for_text(self, text: Text) -> &'static str {
+        match (self, text.lang()) {
+            (Self::Left, Lang::English) => "L only",
+            (Self::Right, Lang::English) => "R only",
+            (Self::Left, Lang::Japanese) => "L のみ",
+            (Self::Right, Lang::Japanese) => "R のみ",
+        }
     }
 }
 
@@ -140,6 +218,8 @@ fn header(
     shared: &SharedMeters,
     setter: &ParamSetter,
     theme: &Theme,
+    text: Text,
+    japanese_attempted: bool,
 ) {
     ui.horizontal(|ui| {
         ui.label(
@@ -163,54 +243,97 @@ fn header(
         ui.separator();
         ui.label(
             RichText::new(format!(
-                "Corr {}",
+                "{} {}",
+                text.corr(),
                 correlation_text(shared.stereo.correlation.load())
             ))
             .monospace()
             .color(theme.text),
         )
-        .on_hover_text("Stereo correlation over 400 ms: −1 opposite phase, +1 in phase");
+        .on_hover_text(text.corr_hint());
         ui.label(
             RichText::new(format!(
-                "Bal {}",
-                balance_text(shared.stereo.balance.load())
+                "{} {}",
+                text.bal(),
+                balance_text(text, shared.stereo.balance.load())
             ))
             .monospace()
             .color(theme.text),
         )
-        .on_hover_text("Left/right energy difference over 400 ms; shows the louder side");
+        .on_hover_text(text.bal_hint());
 
         ui.separator();
-        ui.label(RichText::new("Layout").color(theme.text_dim))
-            .on_hover_text("Meter arrangement; the measurement and its values do not change");
+        ui.label(RichText::new(text.layout()).color(theme.text_dim))
+            .on_hover_text(text.layout_hint());
         combo(
             ui,
             "layout-preset",
             &params.layout_preset,
             setter,
             &[LayoutPreset::Standard, LayoutPreset::Stereo],
-            layout_preset_name,
+            |preset| layout_preset_name(text, preset),
         );
+
+        language_menu(ui, params, setter, text, japanese_attempted);
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui
-                .button("Reset")
-                .on_hover_text("Reset integrated loudness, loudness range and maxima together")
+                .button(text.reset())
+                .on_hover_text(text.reset_hint())
                 .clicked()
             {
                 shared.request_reset();
             }
             let running = shared.integrating();
-            let label = if running { "Pause" } else { "Continue" };
-            if ui
-                .button(label)
-                .on_hover_text("Pause or continue integrated loudness and loudness range together")
-                .clicked()
-            {
+            let label = if running { text.pause() } else { text.resume() };
+            if ui.button(label).on_hover_text(text.pause_hint()).clicked() {
                 shared.set_integrating(!running);
             }
         });
     });
+}
+
+/// The compact language selector.
+///
+/// The current language code is the button label; the menu names each language in its own
+/// script. Japanese can be chosen once; the plug-in loads the system font when it is
+/// requested. Only a failed attempt disables the entry, so the interface never switches to
+/// text the renderer cannot draw.
+fn language_menu(
+    ui: &mut egui::Ui,
+    params: &ShirabeParams,
+    setter: &ParamSetter,
+    text: Text,
+    japanese_attempted: bool,
+) {
+    ui.separator();
+    let current = params.ui_language.value();
+    let menu = ui.menu_button(text.lang().code(), |ui| {
+        for option in Lang::ALL {
+            let enabled =
+                option == Lang::English || text.japanese_available() || !japanese_attempted;
+            if enabled {
+                let label = text.language_option_label(option);
+                if ui
+                    .selectable_label(current.lang() == option, label)
+                    .clicked()
+                {
+                    set_language(params, setter, option);
+                    ui.close_menu();
+                }
+            } else {
+                ui.add_enabled(false, egui::Button::new(text.language_unavailable()))
+                    .on_disabled_hover_text(text.language_unavailable_hint());
+            }
+        }
+    });
+    menu.response.on_hover_text(text.language_hint());
+}
+
+fn set_language(params: &ShirabeParams, setter: &ParamSetter, language: Lang) {
+    setter.begin_set_parameter(&params.ui_language);
+    setter.set_parameter(&params.ui_language, UiLanguage::from_lang(language));
+    setter.end_set_parameter(&params.ui_language);
 }
 
 /// Geometry of a group of vertical bars with a scale on the left.
@@ -346,11 +469,12 @@ fn meters(
     theme: &Theme,
     height: f32,
     scope: &mut ScopeView,
+    text: Text,
 ) {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     if response
-        .on_hover_text("Double-click to reset integrated loudness, loudness range and maxima")
+        .on_hover_text(text.meter_reset_hint())
         .double_clicked()
     {
         shared.request_reset();
@@ -365,7 +489,7 @@ fn meters(
     // The preset decides which tiles exist and where they go; the registered view of each
     // tile draws into its rectangle.
     let arrangement = arrange(params.layout_preset.value().geometry(), rect);
-    let loudness = LoudnessView::new(params);
+    let loudness = LoudnessView::new(params, text);
     let mut ctx = MeterCtx {
         shared,
         params,
@@ -375,6 +499,7 @@ fn meters(
         now,
         channels,
         target,
+        text,
     };
     let table = editor_views();
     let views = MeterViewRegistry::new(&table).expect("every tile is registered once");
@@ -392,6 +517,7 @@ struct MeterCtx<'a> {
     now: f64,
     channels: usize,
     target: TargetSpec,
+    text: Text,
 }
 
 /// The view that draws `id`.
@@ -424,6 +550,7 @@ fn tile_peak(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
         ctx.theme,
         ctx.channels,
         ctx.target,
+        ctx.text,
     );
 }
 
@@ -435,6 +562,7 @@ fn tile_level(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
         ctx.theme,
         ctx.channels,
         (ctx.params.level_mode.value(), ctx.params.vu_needle.value()),
+        ctx.text,
     );
 }
 
@@ -450,16 +578,18 @@ fn tile_readout(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
         ctx.theme,
         ctx.loudness,
         ctx.channels,
+        ctx.text,
     );
 }
 
 fn tile_scope(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
     scope_section(
-        painter, rect, ctx.shared, ctx.params, ctx.theme, ctx.scope, ctx.now,
+        painter, rect, ctx.shared, ctx.params, ctx.theme, ctx.scope, ctx.now, ctx.text,
     );
 }
 
 /// Draws the Lissajous view from the captured stereo frames.
+#[allow(clippy::too_many_arguments)]
 fn scope_section(
     painter: &Painter,
     rect: Rect,
@@ -468,6 +598,7 @@ fn scope_section(
     theme: &Theme,
     view: &mut ScopeView,
     now: f64,
+    text: Text,
 ) {
     let trail_on = params.scope_trail.value();
     let auto = params.scope_auto_gain.value();
@@ -491,6 +622,7 @@ fn scope_section(
         holding: view.holding(),
         mono: view.mono(),
         clipped: view.clipped(),
+        text,
     };
     draw_scope(painter, rect, &render, theme);
 }
@@ -725,10 +857,11 @@ fn peak_section(
     theme: &Theme,
     channels: usize,
     target: TargetSpec,
+    text: Text,
 ) {
     let scale = MeterScale::PEAK_DBFS;
     let group = BarGroup::new(rect, channels);
-    group.draw_frame(painter, "PEAK dBFS / TP dBTP", &scale, theme, 0.0);
+    group.draw_frame(painter, text.peak_title(), &scale, theme, 0.0);
     let ceiling = target.true_peak_ceiling;
     for index in 0..channels {
         let bar = group.bar(index);
@@ -764,36 +897,36 @@ struct LevelView {
 }
 
 impl LevelView {
-    fn new(mode: LevelMode) -> Self {
+    fn new(mode: LevelMode, text: Text) -> Self {
         match mode {
             LevelMode::Vu => Self {
                 scale: MeterScale::VU,
-                title: "VU",
+                title: text.level_vu_title(),
                 offset: 0.0,
                 over_from: 0.0,
             },
             LevelMode::PpmTypeI => Self {
                 scale: MeterScale::PPM_TYPE_I,
-                title: "PPM Type I  dB",
+                title: text.level_ppm_i_title(),
                 offset: -PERMITTED_MAX_DBFS,
                 over_from: 0.0,
             },
             LevelMode::PpmTypeII => Self {
                 scale: MeterScale::PPM_EBU,
-                title: "PPM EBU  dB",
+                title: text.level_ppm_ebu_title(),
                 offset: -ALIGNMENT_DBFS,
                 over_from: PERMITTED_MAX_DBFS - ALIGNMENT_DBFS,
             },
             LevelMode::PpmTypeIIBbc => Self {
                 scale: MeterScale::PPM_BBC,
-                title: "PPM BBC",
+                title: text.level_ppm_bbc_title(),
                 offset: -ALIGNMENT_DBFS,
                 // Mark 6 is the permitted maximum level (+8 dB above mark 4).
                 over_from: 8.0,
             },
             LevelMode::PpmIeee => Self {
                 scale: MeterScale::PPM_IEEE,
-                title: "PPM IEEE  dB",
+                title: text.level_ppm_ieee_title(),
                 // TEST (the alignment level) is printed at -8 on the IEEE scale.
                 offset: -ALIGNMENT_DBFS - 8.0,
                 // Fig 5 draws the range from 0 to +4 as a heavy band.
@@ -832,13 +965,14 @@ fn level_section(
     theme: &Theme,
     channels: usize,
     (mode, needle): (LevelMode, bool),
+    text: Text,
 ) {
-    let view = LevelView::new(mode);
+    let view = LevelView::new(mode, text);
     if mode == LevelMode::Vu && needle {
         painter.text(
             rect.left_top(),
             Align2::LEFT_TOP,
-            "VU  ·  Needle",
+            text.level_vu_needle_title(),
             FontId::proportional(11.0),
             theme.text_dim,
         );
@@ -931,19 +1065,30 @@ struct LoudnessView {
     scale: MeterScale,
     scale_name: &'static str,
     relative: bool,
+    mode_name: &'static str,
 }
 
 impl LoudnessView {
-    fn new(params: &ShirabeParams) -> Self {
+    fn new(params: &ShirabeParams, text: Text) -> Self {
         let (scale, scale_name) = match params.loudness_scale.value() {
             LoudnessScale::Ebu9 => (MeterScale::LOUDNESS_EBU_9, "+9"),
             LoudnessScale::Ebu18 => (MeterScale::LOUDNESS_EBU_18, "+18"),
         };
+        let target = params.target_spec();
+        let mode_name = match target.preset {
+            LoudnessTarget::EbuR128 => text.mode_ebu(),
+            LoudnessTarget::AribTrB32 => "TR-B32",
+            LoudnessTarget::AtscA85 => "A/85",
+            LoudnessTarget::Streaming14 => "Spotify",
+            LoudnessTarget::ApplePodcasts => "Apple Podcasts",
+            LoudnessTarget::Custom => text.mode_custom(),
+        };
         Self {
-            target: params.target_spec(),
+            target,
             scale,
             scale_name,
             relative: params.loudness_unit.value() == LoudnessUnit::Relative,
+            mode_name,
         }
     }
 
@@ -1002,18 +1147,6 @@ impl LoudnessView {
             },
         ]
     }
-
-    /// Name of the operating mode shown with the loudness section.
-    fn mode_name(&self) -> &'static str {
-        match self.target.preset {
-            LoudnessTarget::EbuR128 => "EBU Mode",
-            LoudnessTarget::AribTrB32 => "TR-B32",
-            LoudnessTarget::AtscA85 => "A/85",
-            LoudnessTarget::Streaming14 => "Spotify",
-            LoudnessTarget::ApplePodcasts => "Apple Podcasts",
-            LoudnessTarget::Custom => "Custom",
-        }
-    }
 }
 
 fn loudness_section(
@@ -1029,7 +1162,7 @@ fn loudness_section(
     } else {
         view.target.loudness
     };
-    let title = format!("{} {}  {}", view.mode_name(), view.scale_name, view.unit());
+    let title = format!("{} {}  {}", view.mode_name, view.scale_name, view.unit());
     group.draw_frame(painter, &title, &view.scale, theme, label_offset);
     let zones = view.zones(theme);
     let l = &shared.loudness;
@@ -1069,6 +1202,7 @@ fn loudness_panel(
     theme: &Theme,
     view: &LoudnessView,
     channels: usize,
+    text: Text,
 ) {
     painter.rect_filled(rect, 4.0, theme.panel);
     let l = &shared.loudness;
@@ -1084,11 +1218,15 @@ fn loudness_panel(
     let right = rect.right() - 10.0;
     let mut y = rect.top() + 10.0;
 
-    let state = if running { "" } else { "  PAUSED" };
+    let heading = if running {
+        text.integrated().to_owned()
+    } else {
+        format!("{}  {}", text.integrated(), text.integrating_paused())
+    };
     painter.text(
         pos2(left, y),
         Align2::LEFT_TOP,
-        format!("INTEGRATED{state}"),
+        heading,
         FontId::proportional(11.0),
         if running { theme.text_dim } else { theme.over },
     );
@@ -1125,14 +1263,14 @@ fn loudness_panel(
     };
     let ceiling = view.target.true_peak_ceiling;
     let rows: [(&str, String, Color32); 7] = [
-        ("LRA", lra_text, lra_colour),
+        (text.lra(), lra_text, lra_colour),
         (
-            "PLR",
+            text.plr(),
             format!("{} LU", format_lufs(l.plr.load())),
             theme.text,
         ),
         (
-            "M max",
+            text.m_max(),
             format!(
                 "{} {unit}",
                 format_lufs(view.display(l.max_momentary.load()))
@@ -1140,7 +1278,7 @@ fn loudness_panel(
             view.colour(theme, l.max_momentary.load()),
         ),
         (
-            "S max",
+            text.s_max(),
             format!(
                 "{} {unit}",
                 format_lufs(view.display(l.max_short_term.load()))
@@ -1148,7 +1286,7 @@ fn loudness_panel(
             view.colour(theme, l.max_short_term.load()),
         ),
         (
-            "TP max",
+            text.tp_max(),
             format!("{} dBTP", format_db(tp_max)),
             if tp_max > ceiling {
                 theme.over
@@ -1157,12 +1295,12 @@ fn loudness_panel(
             },
         ),
         (
-            "Time",
+            text.time(),
             format!("{}:{:02}", (seconds / 60.0) as u32, (seconds % 60.0) as u32),
             theme.text_dim,
         ),
         (
-            "Target",
+            text.target_label(),
             match view.target.tolerance {
                 Some(tol) => format!(
                     "{} ±{} / {}",
@@ -1215,7 +1353,7 @@ fn loudness_panel(
         painter.text(
             pos2(left, y),
             Align2::LEFT_TOP,
-            "* LRA not yet stable (< 60 s)",
+            text.lra_note(),
             FontId::proportional(10.0),
             theme.text_dim,
         );
@@ -1228,7 +1366,7 @@ fn combo<E: Enum + PartialEq + Copy + 'static>(
     param: &EnumParam<E>,
     setter: &ParamSetter,
     options: &[E],
-    name: fn(E) -> &'static str,
+    name: impl Fn(E) -> &'static str,
 ) {
     let current = param.value();
     egui::ComboBox::from_id_salt(id)
@@ -1247,9 +1385,9 @@ fn combo<E: Enum + PartialEq + Copy + 'static>(
         });
 }
 
-fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
+fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter, text: Text) {
     ui.horizontal(|ui| {
-        ui.label("Target");
+        ui.label(text.target_label());
         combo(
             ui,
             "loudness-target",
@@ -1263,7 +1401,7 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
                 LoudnessTarget::ApplePodcasts,
                 LoudnessTarget::Custom,
             ],
-            target_name,
+            |target| target_name(text, target),
         );
         combo(
             ui,
@@ -1272,8 +1410,8 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
             setter,
             &[LoudnessScale::Ebu9, LoudnessScale::Ebu18],
             |s| match s {
-                LoudnessScale::Ebu9 => "+9 scale",
-                LoudnessScale::Ebu18 => "+18 scale",
+                LoudnessScale::Ebu9 => text.scale_ebu9(),
+                LoudnessScale::Ebu18 => text.scale_ebu18(),
             },
         );
         combo(
@@ -1283,15 +1421,15 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
             setter,
             &[LoudnessUnit::Absolute, LoudnessUnit::Relative],
             |u| match u {
-                LoudnessUnit::Absolute => "Absolute",
-                LoudnessUnit::Relative => "Relative (LU)",
+                LoudnessUnit::Absolute => text.unit_absolute(),
+                LoudnessUnit::Relative => text.unit_relative(),
             },
         );
 
         let mut auto = params.auto_reset.value();
         if ui
-            .checkbox(&mut auto, "Reset on play")
-            .on_hover_text("Reset the programme measurement when the host starts playback")
+            .checkbox(&mut auto, text.reset_on_play())
+            .on_hover_text(text.reset_on_play_hint())
             .changed()
         {
             setter.begin_set_parameter(&params.auto_reset);
@@ -1301,25 +1439,25 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
     });
     if params.loudness_target.value() == LoudnessTarget::Custom {
         ui.horizontal(|ui| {
-            ui.label("Custom");
+            ui.label(text.custom());
             ui.add(
                 widgets::ParamSlider::for_param(&params.custom_loudness, setter).with_width(110.0),
             )
-            .on_hover_text("Target integrated loudness");
+            .on_hover_text(text.custom_target_hint());
             ui.label("±");
             ui.add(
                 widgets::ParamSlider::for_param(&params.custom_tolerance, setter).with_width(90.0),
             )
-            .on_hover_text("Tolerance around the target (none = no tolerance)");
-            ui.label("TP ≤");
+            .on_hover_text(text.custom_tolerance_hint());
+            ui.label(text.tp_le());
             ui.add(
                 widgets::ParamSlider::for_param(&params.custom_true_peak, setter).with_width(100.0),
             )
-            .on_hover_text("True-peak ceiling");
+            .on_hover_text(text.custom_tp_hint());
         });
     }
     ui.horizontal(|ui| {
-        ui.label("Level");
+        ui.label(text.level_label());
         combo(
             ui,
             "level-mode",
@@ -1332,28 +1470,28 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
                 LevelMode::PpmTypeIIBbc,
                 LevelMode::PpmIeee,
             ],
-            level_mode_name,
+            |mode| level_mode_name(text, mode),
         );
         if params.level_mode.value() == LevelMode::Vu {
             let mut needle = params.vu_needle.value();
             if ui
-                .checkbox(&mut needle, "Needle")
-                .on_hover_text("Switch the VU display between bars and moving needles")
+                .checkbox(&mut needle, text.needle())
+                .on_hover_text(text.needle_hint())
                 .changed()
             {
                 setter.begin_set_parameter(&params.vu_needle);
                 setter.set_parameter(&params.vu_needle, needle);
                 setter.end_set_parameter(&params.vu_needle);
             }
-            ui.label("0 VU =");
+            ui.label(text.vu_reference());
             ui.add(widgets::ParamSlider::for_param(&params.vu_reference, setter).with_width(110.0));
         }
         ui.separator();
         // The view switch replaces a "Scope" caption so the group still fits at 640 px.
         let mut left_right = params.scope_view_lr.value();
         if ui
-            .checkbox(&mut left_right, "L/R")
-            .on_hover_text("Plot left on the horizontal and right on the vertical axis")
+            .checkbox(&mut left_right, text.lr_view())
+            .on_hover_text(text.lr_hint())
             .changed()
         {
             setter.begin_set_parameter(&params.scope_view_lr);
@@ -1362,8 +1500,8 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
         }
         let mut trail = params.scope_trail.value();
         if ui
-            .checkbox(&mut trail, "Trail")
-            .on_hover_text("Fade the recent Lissajous figures over about 0.3 seconds")
+            .checkbox(&mut trail, text.trail())
+            .on_hover_text(text.trail_hint())
             .changed()
         {
             setter.begin_set_parameter(&params.scope_trail);
@@ -1372,10 +1510,8 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
         }
         let mut auto = params.scope_auto_gain.value();
         if ui
-            .checkbox(&mut auto, "Auto")
-            .on_hover_text(
-                "Fit the figure to the signal (up to +20 dB) instead of the fixed ±1 scale",
-            )
+            .checkbox(&mut auto, text.auto())
+            .on_hover_text(text.auto_hint())
             .changed()
         {
             setter.begin_set_parameter(&params.scope_auto_gain);
@@ -1385,31 +1521,31 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
     });
 }
 
-fn layout_preset_name(preset: LayoutPreset) -> &'static str {
+fn layout_preset_name(text: Text, preset: LayoutPreset) -> &'static str {
     match preset {
-        LayoutPreset::Standard => "Standard",
-        LayoutPreset::Stereo => "Stereo",
+        LayoutPreset::Standard => text.layout_standard(),
+        LayoutPreset::Stereo => text.layout_stereo(),
     }
 }
 
-fn level_mode_name(m: LevelMode) -> &'static str {
+fn level_mode_name(text: Text, m: LevelMode) -> &'static str {
     match m {
-        LevelMode::Vu => "VU",
-        LevelMode::PpmTypeI => "PPM Type I (0 dB = -9 dBFS)",
-        LevelMode::PpmTypeII => "PPM EBU (TEST = -18 dBFS)",
-        LevelMode::PpmTypeIIBbc => "PPM BBC (4 = -18 dBFS)",
-        LevelMode::PpmIeee => "PPM IEEE (TEST -8 = -18 dBFS)",
+        LevelMode::Vu => text.level_mode_vu(),
+        LevelMode::PpmTypeI => text.level_mode_ppm_i(),
+        LevelMode::PpmTypeII => text.level_mode_ppm_ebu(),
+        LevelMode::PpmTypeIIBbc => text.level_mode_ppm_bbc(),
+        LevelMode::PpmIeee => text.level_mode_ppm_ieee(),
     }
 }
 
-fn target_name(t: LoudnessTarget) -> &'static str {
+fn target_name(text: Text, t: LoudnessTarget) -> &'static str {
     match t {
-        LoudnessTarget::AribTrB32 => "ARIB TR-B32  -24 LKFS",
-        LoudnessTarget::EbuR128 => "EBU R 128  -23 LUFS",
-        LoudnessTarget::AtscA85 => "ATSC A/85  -24 LKFS",
-        LoudnessTarget::Streaming14 => "Spotify  -14 LUFS",
-        LoudnessTarget::ApplePodcasts => "Apple Podcasts  -16 LKFS",
-        LoudnessTarget::Custom => "Custom",
+        LoudnessTarget::AribTrB32 => text.target_arib(),
+        LoudnessTarget::EbuR128 => text.target_ebu(),
+        LoudnessTarget::AtscA85 => text.target_atsc(),
+        LoudnessTarget::Streaming14 => text.target_spotify(),
+        LoudnessTarget::ApplePodcasts => text.target_apple(),
+        LoudnessTarget::Custom => text.target_custom(),
     }
 }
 
@@ -1418,10 +1554,11 @@ fn oscillator_controls(
     params: &ShirabeParams,
     setter: &ParamSetter,
     theme: &Theme,
+    text: Text,
 ) {
     ui.horizontal(|ui| {
         let mut enabled = params.osc_enabled.value();
-        if ui.checkbox(&mut enabled, "Test oscillator").changed() {
+        if ui.checkbox(&mut enabled, text.test_oscillator()).changed() {
             setter.begin_set_parameter(&params.osc_enabled);
             setter.set_parameter(&params.osc_enabled, enabled);
             setter.end_set_parameter(&params.osc_enabled);
@@ -1430,14 +1567,13 @@ fn oscillator_controls(
         ui.add(widgets::ParamSlider::for_param(&params.osc_frequency, setter).with_width(110.0));
         if enabled {
             ui.label(
-                RichText::new("Input replaced by test tone")
-                    .color(Color32::from_rgb(0xf2, 0xc1, 0x2e)),
+                RichText::new(text.osc_replaces_input()).color(Color32::from_rgb(0xf2, 0xc1, 0x2e)),
             );
         } else {
             let note = if setter.raw_context.plugin_api() == PluginApi::Standalone {
-                "Measuring the selected source"
+                text.measuring_source()
             } else {
-                "Pass-through, no latency"
+                text.pass_through()
             };
             ui.label(RichText::new(note).color(theme.text_dim));
         }
@@ -1511,7 +1647,16 @@ mod tests {
                         raw_context: &TestGuiContext,
                     };
                     plugin_window(ctx, &params, |ui| {
-                        draw(ui, &params, &shared, &setter, &theme, &mut scope);
+                        draw(
+                            ui,
+                            &params,
+                            &shared,
+                            &setter,
+                            &theme,
+                            &mut scope,
+                            Text::new(Lang::English, true),
+                            true,
+                        );
                     });
                 },
             );
@@ -1578,6 +1723,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_editor_installs_the_cjk_fallback_only_when_japanese_is_selected() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |_| {});
+
+        // English never loads a CJK font: the plug-in stays small in memory.
+        let mut state = EditorState {
+            theme: Theme::dark(),
+            scope: ScopeView::new(),
+            japanese_font_installed: false,
+            japanese: None,
+            japanese_check_pending: false,
+        };
+        let mut available = None;
+        let _ = ctx.run(Default::default(), |ctx| {
+            state.prepare_japanese(ctx, UiLanguage::English);
+            available = Some(state.japanese(ctx));
+        });
+        assert!(!state.japanese_font_installed);
+        assert_eq!(available, Some(false));
+
+        // Selecting Japanese installs the system fallback; egui applies the fonts on the
+        // next frame, so the first frame still draws English and the second one reports
+        // what the new fonts cover.
+        let mut state = EditorState {
+            theme: Theme::dark(),
+            scope: ScopeView::new(),
+            japanese_font_installed: false,
+            japanese: None,
+            japanese_check_pending: false,
+        };
+        let mut available = None;
+        let _ = ctx.run(Default::default(), |ctx| {
+            state.prepare_japanese(ctx, UiLanguage::Japanese);
+            available = Some(state.japanese(ctx));
+        });
+        assert!(state.japanese_font_installed);
+        assert_eq!(available, Some(false));
+        let mut next_frame = None;
+        let mut fresh = None;
+        let _ = ctx.run(Default::default(), |ctx| {
+            next_frame = Some(state.japanese(ctx));
+            fresh = Some(crate::fonts::has_japanese(ctx));
+        });
+        assert_eq!(
+            next_frame, fresh,
+            "the second frame must report what the installed fonts cover"
+        );
+    }
+
     struct TestGuiContext;
 
     impl GuiContext for TestGuiContext {
@@ -1626,11 +1821,15 @@ mod tests {
         assert_eq!(correlation_text(Some(-1.0)), "-1.00");
         assert_eq!(correlation_text(Some(0.0)), "0.00");
         assert_eq!(correlation_text(Some(1.0)), "+1.00");
-        assert_eq!(balance_text(None), "--");
-        assert_eq!(balance_text(Some(0.0)), "0.0 dB");
-        assert_eq!(balance_text(Some(-0.6)), "L 6.0 dB");
-        assert_eq!(balance_text(Some(0.6)), "R 6.0 dB");
-        assert_eq!(balance_text(Some(-1.0)), "L only");
-        assert_eq!(balance_text(Some(1.0)), "R only");
+        let text = Text::new(Lang::English, true);
+        assert_eq!(balance_text(text, None), "--");
+        assert_eq!(balance_text(text, Some(0.0)), "0.0 dB");
+        assert_eq!(balance_text(text, Some(-0.6)), "L 6.0 dB");
+        assert_eq!(balance_text(text, Some(0.6)), "R 6.0 dB");
+        assert_eq!(balance_text(text, Some(-1.0)), "L only");
+        assert_eq!(balance_text(text, Some(1.0)), "R only");
+        let text = Text::new(Lang::Japanese, true);
+        assert_eq!(balance_text(text, Some(-1.0)), "L のみ");
+        assert_eq!(balance_text(text, Some(1.0)), "R のみ");
     }
 }

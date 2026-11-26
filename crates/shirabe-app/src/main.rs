@@ -11,7 +11,6 @@ mod audio;
 mod context;
 mod decode;
 mod file_io;
-mod fonts;
 mod output;
 mod player;
 #[cfg(target_os = "linux")]
@@ -32,8 +31,9 @@ use shirabe_plugin::engine::MeterEngine;
 use shirabe_plugin::shared::SharedMeters;
 use shirabe_plugin::{
     editor::{self, ScopeView},
-    ShirabeParams,
+    fonts, ShirabeParams,
 };
+use shirabe_ui::i18n::Text;
 use shirabe_ui::Theme;
 
 use appearance::Appearance;
@@ -77,6 +77,9 @@ struct App {
     shared: Arc<SharedMeters>,
     context: StandaloneContext,
     theme: Theme,
+    /// Whether the installed fonts cover the Japanese catalogue; checked in the first frame,
+    /// because egui has no fonts before `Context::run()`.
+    japanese: Option<bool>,
     source: Source,
     running: Option<audio::Running>,
     start_error: Option<String>,
@@ -144,6 +147,7 @@ impl App {
             shared: Arc::new(SharedMeters::new()),
             context: StandaloneContext,
             theme,
+            japanese: None,
             source: Source::None,
             running: None,
             start_error: None,
@@ -251,10 +255,10 @@ impl App {
         self.running.as_ref().and_then(|r| r.playback.as_ref())
     }
 
-    fn audio_bar(&mut self, ui: &mut egui::Ui) {
+    fn audio_bar(&mut self, ui: &mut egui::Ui, text: Text) {
         let mut new_source = None;
         ui.horizontal(|ui| {
-            ui.label("Audio API");
+            ui.label(text.audio_api());
             let previous_host = self.host.clone();
             egui::ComboBox::from_id_salt("audio-host")
                 .selected_text(self.host.as_str())
@@ -267,29 +271,29 @@ impl App {
                 self.refresh_devices();
             }
 
-            ui.label("Source");
+            ui.label(text.source());
             let current = match &self.source {
-                Source::File { path } => file_label(path),
+                Source::File { path } => file_label(text, path),
                 _ => self
                     .inputs
                     .iter()
                     .chain(&self.playing)
                     .find(|c| c.source == self.source)
-                    .map_or_else(|| "None".to_owned(), |c| c.label.clone()),
+                    .map_or_else(|| text.none().to_owned(), |c| c.label.clone()),
             };
             egui::ComboBox::from_id_salt("audio-source")
                 .width(320.0)
                 .selected_text(current.as_str())
                 .show_ui(ui, |ui| {
                     if ui
-                        .selectable_label(self.source == Source::None, "None")
+                        .selectable_label(self.source == Source::None, text.none())
                         .clicked()
                     {
                         new_source = Some(Source::None);
                     }
                     let groups = [
-                        ("Inputs", &self.inputs),
-                        ("Playing on this computer", &self.playing),
+                        (text.inputs(), &self.inputs),
+                        (text.playing_here(), &self.playing),
                     ];
                     for (title, list) in groups {
                         if list.is_empty() {
@@ -312,20 +316,20 @@ impl App {
                     }
                     ui.separator();
                     ui.label(
-                        egui::RichText::new("File playback")
+                        egui::RichText::new(text.file_playback())
                             .small()
                             .color(self.theme.text_dim),
                     );
                     let selected = matches!(self.source, Source::File { .. });
-                    if ui.selectable_label(selected, "Audio file").clicked() {
+                    if ui.selectable_label(selected, text.audio_file()).clicked() {
                         new_source = Some(Source::File {
                             path: self.file.trim().to_owned(),
                         });
                     }
                 });
             if ui
-                .button("Refresh")
-                .on_hover_text("Search for devices again")
+                .button(text.refresh())
+                .on_hover_text(text.refresh_hint())
                 .clicked()
             {
                 self.hosts = audio::hosts();
@@ -337,18 +341,16 @@ impl App {
             if let Some(r) = &self.running {
                 ui.label(egui::RichText::new(&r.description).color(dim));
                 if let Some(e) = r.error.lock().unwrap().as_ref() {
-                    ui.label(
-                        egui::RichText::new(format!("Stream error: {e}")).color(self.theme.over),
-                    );
+                    ui.label(egui::RichText::new(text.stream_error(e)).color(self.theme.over));
                 }
             }
             if let Some(e) = &self.start_error {
-                ui.label(egui::RichText::new(format!("Cannot start: {e}")).color(self.theme.over));
+                ui.label(egui::RichText::new(text.cannot_start(e)).color(self.theme.over));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .button("Appearance")
-                    .on_hover_text("Import or export the layout and theme colours")
+                    .button(text.appearance())
+                    .on_hover_text(text.appearance_hint())
                     .clicked()
                 {
                     self.show_appearance = !self.show_appearance;
@@ -365,7 +367,7 @@ impl App {
     }
 
     /// Output device, file and transport; only shown for file playback.
-    fn playback_bar(&mut self, ui: &mut egui::Ui) {
+    fn playback_bar(&mut self, ui: &mut egui::Ui, text: Text) {
         let (paused, ended, position, duration) = match self.playback() {
             Some(p) => (p.paused(), p.ended(), p.position(), p.duration()),
             None => (false, false, 0.0, None),
@@ -374,11 +376,11 @@ impl App {
         let mut start = false;
         let mut toggle_pause = false;
         ui.horizontal(|ui| {
-            ui.label("Output");
-            let current = self
-                .output
-                .as_ref()
-                .map_or_else(|| "Default".to_owned(), |d| d.label().to_owned());
+            ui.label(text.output());
+            let current = self.output.as_ref().map_or_else(
+                || text.default_output().to_owned(),
+                |d| d.label().to_owned(),
+            );
             egui::ComboBox::from_id_salt("playback-output")
                 .width(210.0)
                 .selected_text(current)
@@ -393,12 +395,12 @@ impl App {
                     }
                 });
 
-            ui.label("File");
+            ui.label(text.file());
             let mut file = std::mem::take(&mut self.file);
             let response = ui.add(
                 egui::TextEdit::singleline(&mut file)
                     .desired_width(280.0)
-                    .hint_text("WAV or FLAC path; a dropped file works too"),
+                    .hint_text(text.file_hint()),
             );
             self.file = file;
             if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -406,33 +408,39 @@ impl App {
             }
 
             if self.playback().is_some() {
+                let pause = if paused {
+                    text.resume_playback()
+                } else {
+                    text.pause_playback()
+                };
                 if ui
-                    .button(if paused { "Resume" } else { "Pause" })
-                    .on_hover_text("Pause keeps the position; the meters fall")
+                    .button(pause)
+                    .on_hover_text(text.pause_playback_hint())
                     .clicked()
                 {
                     toggle_pause = true;
                 }
                 if ui
-                    .button("From start")
-                    .on_hover_text("Play the file again from the beginning")
+                    .button(text.from_start())
+                    .on_hover_text(text.from_start_hint())
                     .clicked()
                 {
                     start = true;
                 }
             } else if ui
-                .button("Play")
-                .on_hover_text("Play the file and measure the stored samples")
+                .button(text.play())
+                .on_hover_text(text.play_hint())
                 .clicked()
             {
                 start = true;
             }
             let total = duration.map_or_else(|| "-:--".to_owned(), format_time);
-            let mut text = format!("{} / {}", format_time(position), total);
+            let mut label = format!("{} / {}", format_time(position), total);
             if ended {
-                text.push_str("  (end)");
+                label.push_str("  ");
+                label.push_str(text.end());
             }
-            ui.label(egui::RichText::new(text).color(self.theme.text_dim));
+            ui.label(egui::RichText::new(label).color(self.theme.text_dim));
         });
 
         if let Some(device) = new_output {
@@ -460,17 +468,17 @@ impl App {
     }
 
     /// Appearance preset window: a file path and the two explicit actions.
-    fn appearance_window(&mut self, ctx: &egui::Context) {
+    fn appearance_window(&mut self, ctx: &egui::Context, text: Text) {
         if !self.show_appearance {
             return;
         }
         let mut open = true;
-        let window = egui::Window::new("Appearance preset")
+        let window = egui::Window::new(text.appearance_title())
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .default_width(440.0)
-            .show(ctx, |ui| self.appearance_contents(ui));
+            .show(ctx, |ui| self.appearance_contents(ui, text));
         if !open
             || window.is_some_and(|window| {
                 ctx.input(|input| {
@@ -487,24 +495,21 @@ impl App {
         self.show_appearance = open;
     }
 
-    fn appearance_contents(&mut self, ui: &mut egui::Ui) {
+    fn appearance_contents(&mut self, ui: &mut egui::Ui, text: Text) {
         ui.label(
-            egui::RichText::new(
-                "Layout and theme colours only. Sources, targets, the oscillator and measured \
-                 values stay unchanged.",
-            )
-            .small()
-            .color(ui.visuals().weak_text_color()),
+            egui::RichText::new(text.appearance_note())
+                .small()
+                .color(ui.visuals().weak_text_color()),
         );
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label("File");
+            ui.label(text.file());
             let mut path = self.appearance_target.path().to_owned();
             if ui
                 .add(
                     egui::TextEdit::singleline(&mut path)
                         .desired_width(310.0)
-                        .hint_text("Path to an appearance .json file"),
+                        .hint_text(text.appearance_path_hint()),
                 )
                 .changed()
             {
@@ -514,38 +519,35 @@ impl App {
         ui.horizontal(|ui| {
             let enabled = !self.file_io_busy() && self.import_awaiting_save.is_none();
             if ui
-                .add_enabled(enabled, egui::Button::new("Import"))
-                .on_hover_text("Apply the layout and colours from this file")
+                .add_enabled(enabled, egui::Button::new(text.import()))
+                .on_hover_text(text.import_hint())
                 .clicked()
             {
-                self.import_appearance();
+                self.import_appearance(text);
             }
             if ui
-                .add_enabled(enabled, egui::Button::new("Export"))
-                .on_hover_text("Write the current layout and colours to this file")
+                .add_enabled(enabled, egui::Button::new(text.export()))
+                .on_hover_text(text.export_hint())
                 .clicked()
             {
-                self.export_appearance(false);
+                self.export_appearance(false, text);
             }
             if self.appearance_target.pending().is_some() {
                 if ui
-                    .add_enabled(enabled, egui::Button::new("Overwrite"))
-                    .on_hover_text("Replace only the file named below")
+                    .add_enabled(enabled, egui::Button::new(text.overwrite()))
+                    .on_hover_text(text.overwrite_hint())
                     .clicked()
                 {
-                    self.export_appearance(true);
+                    self.export_appearance(true, text);
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(text.cancel()).clicked() {
                     self.appearance_target.invalidate();
                     self.appearance_status = None;
                 }
             }
         });
         if let Some(path) = self.appearance_target.pending() {
-            ui.colored_label(
-                ui.visuals().error_fg_color,
-                format!("File already exists. Replace ‘{path}’?"),
-            );
+            ui.colored_label(ui.visuals().error_fg_color, text.file_exists(path));
         } else if let Some(status) = &self.appearance_status {
             let color = if status.error {
                 ui.visuals().error_fg_color
@@ -556,10 +558,10 @@ impl App {
         }
     }
 
-    fn import_appearance(&mut self) {
+    fn import_appearance(&mut self, text: Text) {
         let Some((path, _)) = self.appearance_target.begin(false) else {
             self.appearance_status = Some(AppearanceStatus::error(
-                "Choose a file path to import.".to_owned(),
+                text.choose_import_path().to_owned(),
             ));
             return;
         };
@@ -568,22 +570,23 @@ impl App {
             FileResult::Import(path, result)
         });
         self.appearance_status = Some(match result {
-            Ok(()) => AppearanceStatus::ok("Reading appearance file…".into()),
-            Err(error) => AppearanceStatus::error(format!("Cannot import: {error}")),
+            Ok(()) => AppearanceStatus::ok(text.reading_appearance().into()),
+            Err(error) => AppearanceStatus::error(text.cannot_import(&error.to_string())),
         });
     }
 
-    fn export_appearance(&mut self, overwrite: bool) {
+    fn export_appearance(&mut self, overwrite: bool, text: Text) {
         let Some((path, revision)) = self.appearance_target.begin(overwrite) else {
             let message = if overwrite {
-                "Use Export first to confirm the file to replace."
+                text.overwrite_needs_export()
             } else {
-                "Choose a file path to export."
+                text.choose_export_path()
             };
             self.appearance_status = Some(AppearanceStatus::error(message.into()));
             return;
         };
         let current = Appearance::current(&self.params, &self.theme);
+        let shown = path.clone();
         let result = self.start_file_job(move || {
             let result = appearance::save(&current, Path::new(&path), overwrite);
             FileResult::Export {
@@ -594,8 +597,8 @@ impl App {
             }
         });
         self.appearance_status = Some(match result {
-            Ok(()) => AppearanceStatus::ok("Writing appearance file…".into()),
-            Err(error) => AppearanceStatus::error(format!("Cannot export: {error}")),
+            Ok(()) => AppearanceStatus::ok(text.writing_appearance().into()),
+            Err(error) => AppearanceStatus::error(text.cannot_export(&shown, &error.to_string())),
         });
     }
 
@@ -614,34 +617,32 @@ impl App {
             .map_err(|e| e.to_string())
     }
 
-    fn start_settings_save(&mut self) {
+    fn start_settings_save(&mut self, text: Text) {
         if self.file_io_busy() {
             return;
         }
         if let Some(settings) = self.pending_settings.take() {
             if let Err(error) = self.start_file_job(move || FileResult::Settings(settings.save())) {
-                self.finish_settings_save(Err(anyhow::anyhow!(error)));
+                self.finish_settings_save(Err(anyhow::anyhow!(error)), text);
             }
         }
     }
 
-    fn finish_settings_save(&mut self, result: anyhow::Result<()>) {
+    fn finish_settings_save(&mut self, result: anyhow::Result<()>, text: Text) {
         let imported = self.import_awaiting_save.is_some();
         if let Some(path) = self.import_awaiting_save.take() {
-            self.appearance_status = Some(AppearanceStatus::ok(format!("Imported {path}.")));
+            self.appearance_status = Some(AppearanceStatus::ok(text.imported(&path)));
         }
         match result {
             Ok(()) => self.import_save_warning = None,
             Err(error) if imported => {
-                self.import_save_warning = Some(format!(
-                    "Appearance applied, but settings could not be saved and may not survive restart: {error:#}"
-                ));
+                self.import_save_warning = Some(text.settings_not_saved(&format!("{error:#}")));
             }
             Err(_) => {}
         }
     }
 
-    fn poll_file_job(&mut self, ctx: &egui::Context) {
+    fn poll_file_job(&mut self, ctx: &egui::Context, text: Text) {
         let Ok(worker) = &mut self.file_io else {
             return;
         };
@@ -650,7 +651,7 @@ impl App {
             Ok(None) => return,
             Err(error) => {
                 if self.import_awaiting_save.is_some() {
-                    self.finish_settings_save(Err(error.into()));
+                    self.finish_settings_save(Err(error.into()), text);
                 } else {
                     self.appearance_status = Some(AppearanceStatus::error(error.to_string()));
                 }
@@ -665,15 +666,14 @@ impl App {
                 appearance::apply(&imported, &self.params, &setter);
                 self.theme = imported.theme;
                 apply_visuals(ctx, &self.theme);
-                self.appearance_status = Some(AppearanceStatus::ok(format!(
-                    "Imported {path}; saving settings…"
-                )));
+                self.appearance_status = Some(AppearanceStatus::ok(text.imported_saving(&path)));
                 self.import_awaiting_save = Some(path);
                 self.save_settings();
             }
             FileResult::Import(_, Err(error)) => {
-                self.appearance_status =
-                    Some(AppearanceStatus::error(format!("Cannot import: {error}")));
+                self.appearance_status = Some(AppearanceStatus::error(
+                    text.cannot_import(&error.to_string()),
+                ));
             }
             FileResult::Export {
                 path,
@@ -682,19 +682,19 @@ impl App {
                 result,
             } => {
                 self.appearance_status = match result {
-                    Ok(()) => Some(AppearanceStatus::ok(format!("Exported {path}."))),
+                    Ok(()) => Some(AppearanceStatus::ok(text.exported(&path))),
                     Err(appearance::Error::Exists)
                         if !overwrite
                             && self.appearance_target.offer_overwrite(&path, revision) =>
                     {
                         None
                     }
-                    Err(error) => Some(AppearanceStatus::error(format!(
-                        "Cannot export {path:?}: {error}"
-                    ))),
+                    Err(error) => Some(AppearanceStatus::error(
+                        text.cannot_export(&path, &error.to_string()),
+                    )),
                 };
             }
-            FileResult::Settings(result) => self.finish_settings_save(result),
+            FileResult::Settings(result) => self.finish_settings_save(result, text),
         }
     }
 
@@ -718,16 +718,21 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Meters move continuously, so redraw every frame.
         ctx.request_repaint();
-        self.poll_file_job(ctx);
+        // The Japanese interface is offered only when the installed fonts can draw it.
+        let japanese = *self
+            .japanese
+            .get_or_insert_with(|| fonts::has_japanese(ctx));
+        let text = self.params.text(japanese);
+        self.poll_file_job(ctx, text);
         self.take_dropped_file(ctx);
         egui::TopBottomPanel::top("audio").show(ctx, |ui| {
-            self.audio_bar(ui);
+            self.audio_bar(ui, text);
             if let Some(warning) = &self.import_save_warning {
                 ui.colored_label(ui.visuals().error_fg_color, warning);
             }
             if matches!(self.source, Source::File { .. }) {
                 ui.separator();
-                self.playback_bar(ui);
+                self.playback_bar(ui, text);
             }
         });
         self.save_if_changed();
@@ -742,10 +747,12 @@ impl eframe::App for App {
                 &setter,
                 &self.theme,
                 &mut self.scope,
+                text,
+                true,
             );
         });
-        self.appearance_window(ctx);
-        self.start_settings_save();
+        self.appearance_window(ctx, text);
+        self.start_settings_save(text);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -756,7 +763,8 @@ impl eframe::App for App {
             let _ = worker.receive(deadline.saturating_duration_since(Instant::now()));
         }
         self.save_settings();
-        self.start_settings_save();
+        let text = self.params.text(self.japanese.unwrap_or(false));
+        self.start_settings_save(text);
         if let Ok(worker) = &mut self.file_io {
             let _ = worker.receive(deadline.saturating_duration_since(Instant::now()));
         }
@@ -773,14 +781,14 @@ fn apply_visuals(ctx: &egui::Context, theme: &Theme) {
 }
 
 /// Label of the file entry in the source list and the combo.
-fn file_label(path: &str) -> String {
+fn file_label(text: Text, path: &str) -> String {
     if path.trim().is_empty() {
-        "Audio file".to_owned()
+        text.audio_file().to_owned()
     } else {
         let name = std::path::Path::new(path)
             .file_name()
             .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned());
-        format!("Audio file: {name}")
+        text.audio_file_named(&name)
     }
 }
 
@@ -807,4 +815,22 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shirabe_ui::i18n::Lang;
+
+    #[test]
+    fn the_file_label_follows_the_interface_language() {
+        let english = Text::new(Lang::English, true);
+        let japanese = Text::new(Lang::Japanese, true);
+        assert_eq!(file_label(english, ""), "Audio file");
+        assert_eq!(file_label(japanese, ""), "音声ファイル");
+        let path = std::path::Path::new("music").join("mix v2.wav");
+        let path = path.to_string_lossy();
+        assert_eq!(file_label(english, &path), "Audio file: mix v2.wav");
+        assert_eq!(file_label(japanese, &path), "音声ファイル: mix v2.wav");
+    }
 }
