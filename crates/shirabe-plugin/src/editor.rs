@@ -309,7 +309,7 @@ fn meters(
         shared,
         theme,
         channels,
-        params.level_mode.value(),
+        (params.level_mode.value(), params.vu_needle.value()),
     );
     let view = LoudnessView::new(params);
     loudness_section(&painter, lufs_rect, shared, theme, &view);
@@ -436,9 +436,35 @@ fn level_section(
     shared: &SharedMeters,
     theme: &Theme,
     channels: usize,
-    mode: LevelMode,
+    (mode, needle): (LevelMode, bool),
 ) {
     let view = LevelView::new(mode);
+    if mode == LevelMode::Vu && needle {
+        painter.text(
+            rect.left_top(),
+            Align2::LEFT_TOP,
+            "VU  ·  Needle",
+            FontId::proportional(11.0),
+            theme.text_dim,
+        );
+        let top = rect.top() + TITLE_HEIGHT;
+        let height = (rect.bottom() - top) / channels as f32;
+        for index in 0..channels {
+            let y = top + height * index as f32;
+            let face =
+                Rect::from_min_max(pos2(rect.left(), y), pos2(rect.right(), y + height - 4.0));
+            let value = shared.channel(index).vu.load(Ordering::Relaxed);
+            shirabe_ui::vu_dial::draw(
+                painter,
+                face,
+                value,
+                &caption(shared, index),
+                &view.readout(mode, value),
+                theme,
+            );
+        }
+        return;
+    }
     let zones = [
         Zone {
             from_db: f32::NEG_INFINITY,
@@ -897,6 +923,16 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
             level_mode_name,
         );
         if params.level_mode.value() == LevelMode::Vu {
+            let mut needle = params.vu_needle.value();
+            if ui
+                .checkbox(&mut needle, "Needle")
+                .on_hover_text("Switch the VU display between bars and moving needles")
+                .changed()
+            {
+                setter.begin_set_parameter(&params.vu_needle);
+                setter.set_parameter(&params.vu_needle, needle);
+                setter.end_set_parameter(&params.vu_needle);
+            }
             ui.label("0 VU =");
             ui.add(widgets::ParamSlider::for_param(&params.vu_reference, setter).with_width(110.0));
         }

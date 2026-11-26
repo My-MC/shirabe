@@ -105,6 +105,12 @@ SKIP_BUNDLE=1 tools/host-tests/run.sh
 
 Ardour の作業ファイルは `target/host-tests/` に作られ、実行のたびに作り直されます。
 
+## VU の針表示
+
+Level で VU を選び、「Needle」をオンにするとチャンネルごとに針が表示されます。
+0 VU の基準とテストオシレーターをともに -18 dBFS に設定すると、針が 0 VU を指します。
+「Needle」をオフにすると、計測を続けたままバー表示に戻ります。
+
 ## GPU のない環境での動作
 
 エディターは OpenGL 3.2 で描画します。

@@ -53,6 +53,7 @@ PLR と、音声ファイルを再生しながらの測定は未実装です。
 - ラウドネス：Momentary、Short-term、Integrated、LRA、PLR（ITU-R BS.1770、EBU Tech 3341 / 3342）
 - 目標値プリセット：ARIB TR-B32、EBU R128、ATSC A/85、配信向け
 - VU（IEC 60268-17）、PPM（IEC 60268-10）
+- VU のバー／針表示の切り替え（実装済み）
 - ホストの再生開始に連動した Integrated のリセット
 - スタンドアロン専用 UI：オーディオデバイスの選択画面、音声ファイルを再生しながらの測定
 - スタンドアロンのオーディオ処理を自前の実装に置き換え、デバイスのサンプルレートと任意のバッファサイズに対応（[#2](https://github.com/My-MC/shirabe/issues/2)）

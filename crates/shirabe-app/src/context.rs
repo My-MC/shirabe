@@ -66,3 +66,19 @@ pub fn load_params(params: &dyn Params, values: &BTreeMap<String, f32>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shirabe_plugin::ShirabeParams;
+
+    #[test]
+    fn vu_needle_is_opt_in_and_survives_settings_roundtrip() {
+        let params = ShirabeParams::default();
+        assert_eq!(save_params(&params).get("vu_needle"), Some(&0.0));
+        load_params(&params, &BTreeMap::from([("vu_needle".to_owned(), 1.0)]));
+        let restored = ShirabeParams::default();
+        load_params(&restored, &save_params(&params));
+        assert_eq!(save_params(&restored).get("vu_needle"), Some(&1.0));
+    }
+}

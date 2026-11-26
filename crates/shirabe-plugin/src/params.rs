@@ -183,6 +183,10 @@ pub struct ShirabeParams {
     #[id = "lvl_mode"]
     pub level_mode: EnumParam<LevelMode>,
 
+    /// Use a moving needle instead of bars when the VU meter is selected.
+    #[id = "vu_needle"]
+    pub vu_needle: BoolParam,
+
     /// Loudness target used for colouring and the target marker.
     #[id = "ld_tgt"]
     pub loudness_target: EnumParam<LoudnessTarget>,
@@ -252,6 +256,8 @@ impl Default for ShirabeParams {
             )
             .with_step_size(1.0)
             .with_unit(" dBFS"),
+
+            vu_needle: BoolParam::new("VU Needle Display", false).non_automatable(),
 
             level_mode: EnumParam::new("Level Meter", LevelMode::Vu),
 

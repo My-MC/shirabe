@@ -6,6 +6,7 @@
 pub mod bar;
 pub mod scale;
 pub mod theme;
+pub mod vu_dial;
 
 pub use nih_plug_egui::egui;
 
