@@ -173,6 +173,11 @@ pub enum LayoutPreset {
     #[id = "history"]
     #[name = "History"]
     History,
+    /// The Standard meters with the FFT / 1/3-octave spectrum along the bottom. Appended after
+    /// `history`, so every stored layout value keeps its meaning.
+    #[id = "spectrum"]
+    #[name = "Spectrum"]
+    Spectrum,
 }
 
 impl LayoutPreset {
@@ -182,6 +187,31 @@ impl LayoutPreset {
             Self::Standard => shirabe_ui::layout::LayoutPreset::Standard,
             Self::Stereo => shirabe_ui::layout::LayoutPreset::Stereo,
             Self::History => shirabe_ui::layout::LayoutPreset::History,
+            Self::Spectrum => shirabe_ui::layout::LayoutPreset::Spectrum,
+        }
+    }
+}
+
+/// Spectrum display of the spectrum tile. Display-only, so it is not automatable.
+#[derive(Enum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SpectrumMode {
+    /// One line per FFT bin.
+    #[id = "fft"]
+    #[name = "FFT"]
+    #[default]
+    Fft,
+    /// One bar per 1/3-octave band.
+    #[id = "rta"]
+    #[name = "1/3 octave"]
+    Rta,
+}
+
+impl SpectrumMode {
+    /// The display mode of the same name.
+    pub fn display(self) -> shirabe_ui::spectrum::Mode {
+        match self {
+            Self::Fft => shirabe_ui::spectrum::Mode::Fft,
+            Self::Rta => shirabe_ui::spectrum::Mode::Rta,
         }
     }
 }
@@ -299,6 +329,10 @@ pub struct ShirabeParams {
     /// older parameter so the host automation indices already in use do not move.
     #[id = "ui_lang"]
     pub ui_language: EnumParam<UiLanguage>,
+
+    /// Spectrum display: FFT line or 1/3-octave bars. Display-only and appended last.
+    #[id = "spc_mode"]
+    pub spectrum_mode: EnumParam<SpectrumMode>,
 }
 
 impl Default for ShirabeParams {
@@ -413,6 +447,8 @@ impl Default for ShirabeParams {
                 .non_automatable(),
 
             ui_language: EnumParam::new("UI Language", UiLanguage::English).non_automatable(),
+
+            spectrum_mode: EnumParam::new("Spectrum Display", SpectrumMode::Fft).non_automatable(),
         }
     }
 }
@@ -487,9 +523,10 @@ mod tests {
             .collect();
         // Appending keeps every host automation index already in use unchanged.
         let scp_lr = ids.iter().position(|id| id == "scp_lr").unwrap();
-        assert_eq!(scp_lr, ids.len() - 3);
-        assert_eq!(ids[ids.len() - 2], "lay_preset");
-        assert_eq!(ids.last().map(String::as_str), Some("ui_lang"));
+        assert_eq!(scp_lr, ids.len() - 4);
+        assert_eq!(ids[ids.len() - 3], "lay_preset");
+        assert_eq!(ids[ids.len() - 2], "ui_lang");
+        assert_eq!(ids.last().map(String::as_str), Some("spc_mode"));
     }
 
     #[test]
@@ -507,9 +544,9 @@ mod tests {
             .into_iter()
             .map(|(id, _, _)| id)
             .collect();
-        assert_eq!(ids.last().map(String::as_str), Some("ui_lang"));
+        assert_eq!(ids[ids.len() - 2], "ui_lang");
         // Every older parameter kept its position; the new ID is only appended.
-        assert_eq!(ids[ids.len() - 2], "lay_preset");
+        assert_eq!(ids[ids.len() - 3], "lay_preset");
     }
 
     #[test]
@@ -547,8 +584,8 @@ mod tests {
             .into_iter()
             .map(|(id, _, _)| id)
             .collect();
-        assert_eq!(ids[ids.len() - 2], "lay_preset");
-        assert_eq!(ids.last().map(String::as_str), Some("ui_lang"));
+        assert_eq!(ids[ids.len() - 3], "lay_preset");
+        assert_eq!(ids[ids.len() - 2], "ui_lang");
     }
 
     #[test]
@@ -563,7 +600,7 @@ mod tests {
         // parameters by ID, and `standalone.json` stores the plain index.
         assert_eq!(
             LayoutPreset::ids(),
-            Some(&["standard", "stereo", "history"][..])
+            Some(&["standard", "stereo", "history", "spectrum"][..])
         );
         assert_eq!(LayoutPreset::from_index(1), LayoutPreset::Stereo);
         assert_eq!(LayoutPreset::from_index(2), LayoutPreset::History);
@@ -577,7 +614,37 @@ mod tests {
             .into_iter()
             .map(|(id, _, _)| id)
             .collect();
-        assert_eq!(ids[ids.len() - 2], "lay_preset");
-        assert_eq!(ids.last().map(String::as_str), Some("ui_lang"));
+        assert_eq!(ids[ids.len() - 3], "lay_preset");
+        assert_eq!(ids[ids.len() - 2], "ui_lang");
+    }
+
+    #[test]
+    fn the_spectrum_layout_and_display_are_appended_non_automatable_settings() {
+        let params = ShirabeParams::default();
+        // The stored variant ids are permanent, and the new preset is only appended.
+        assert_eq!(
+            LayoutPreset::ids(),
+            Some(&["standard", "stereo", "history", "spectrum"][..])
+        );
+        assert_eq!(LayoutPreset::from_index(3), LayoutPreset::Spectrum);
+        assert_eq!(
+            LayoutPreset::Spectrum.geometry(),
+            shirabe_ui::layout::LayoutPreset::Spectrum
+        );
+
+        assert_eq!(params.spectrum_mode.value(), SpectrumMode::Fft);
+        assert!(params
+            .spectrum_mode
+            .flags()
+            .contains(ParamFlags::NON_AUTOMATABLE));
+        assert_eq!(SpectrumMode::ids(), Some(&["fft", "rta"][..]));
+
+        let ids: Vec<String> = params
+            .param_map()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(ids.last().map(String::as_str), Some("spc_mode"));
+        assert_eq!(ids[ids.len() - 2], "ui_lang");
     }
 }

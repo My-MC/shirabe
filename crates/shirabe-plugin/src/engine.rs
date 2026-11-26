@@ -6,6 +6,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use shirabe_dsp::spectrum::mono_sum;
 use shirabe_dsp::stereo::StereoStatistics;
 use shirabe_dsp::{
     db_to_gain, ChannelLayout, LoudnessMeter, PeakBallistics, PeakMeter, PpmMeter, PpmType,
@@ -15,6 +16,9 @@ use shirabe_dsp::{
 use crate::denormal::DenormalGuard;
 use crate::params::{LevelMode, ShirabeParams};
 use crate::shared::{SharedMeters, MAX_CHANNELS};
+
+/// Frames copied into the spectrum ring per step (no allocation on the audio thread).
+const SPECTRUM_BLOCK: usize = 512;
 
 /// All meters of one Shirabe instance.
 pub struct MeterEngine {
@@ -32,6 +36,10 @@ pub struct MeterEngine {
     /// Correlation and balance of the stereo input; fed only while both channels are present.
     stereo: StereoStatistics,
     stereo_active: bool,
+    /// Mono sum for the spectrum capture, filled in blocks without allocating.
+    spectrum_scratch: [f32; SPECTRUM_BLOCK],
+    /// Channel count the spectrum capture was last fed with; a change clears the ring.
+    spectrum_channels: usize,
     osc: SineOscillator,
     osc_was_enabled: bool,
     was_playing: bool,
@@ -61,6 +69,8 @@ impl MeterEngine {
             loudness: LoudnessMeter::new(sr, ChannelLayout::Stereo.roles()),
             stereo: StereoStatistics::new(sr),
             stereo_active: false,
+            spectrum_scratch: [0.0; SPECTRUM_BLOCK],
+            spectrum_channels: 0,
             osc: SineOscillator::new(1000.0, sr),
             osc_was_enabled: false,
             was_playing: false,
@@ -98,6 +108,7 @@ impl MeterEngine {
         self.loudness.prepare(sample_rate, layout.roles());
         self.stereo.prepare(sample_rate);
         self.stereo_active = false;
+        self.spectrum_channels = 0;
         self.programme_peak = MINUS_INFINITY_DB;
         self.osc.reset();
         self.shared.configure(channels, sample_rate);
@@ -120,6 +131,7 @@ impl MeterEngine {
         self.loudness.reset();
         self.stereo.reset();
         self.stereo_active = false;
+        self.spectrum_channels = 0;
         self.programme_peak = MINUS_INFINITY_DB;
         self.osc.reset();
         self.shared.clear();
@@ -137,6 +149,8 @@ impl MeterEngine {
         self.loudness.reset_programme();
         // The graph records the programme, so it starts over with it.
         self.shared.history.clear();
+        // The spectrum is display-only but shows the same programme, so Reset clears it too.
+        self.shared.spectrum.clear();
     }
 
     /// Measures one block. `channels` holds one slice per channel, all of the same length.
@@ -185,6 +199,31 @@ impl MeterEngine {
             self.stereo_active = false;
         }
         self.shared.stereo.store(&self.stereo.readout());
+
+        // Capture the mono sum for the spectrum tile. The ring is bounded and the copy uses a
+        // fixed scratch block, so the audio thread neither locks nor allocates.
+        if channels.len() != self.spectrum_channels {
+            // A layout change must not leave frames from the previous input in the display.
+            self.shared.spectrum.clear();
+            self.spectrum_channels = channels.len();
+        }
+        let spectrum_frames = channels.first().map_or(0, |channel| channel.len());
+        let mut offset = 0;
+        while offset < spectrum_frames {
+            let count = (spectrum_frames - offset).min(SPECTRUM_BLOCK);
+            if channels.len() >= 2 {
+                mono_sum(
+                    &channels[0][offset..offset + count],
+                    &channels[1][offset..offset + count],
+                    &mut self.spectrum_scratch[..count],
+                );
+            } else {
+                self.spectrum_scratch[..count]
+                    .copy_from_slice(&channels[0][offset..offset + count]);
+            }
+            self.shared.spectrum.push(&self.spectrum_scratch[..count]);
+            offset += count;
+        }
 
         let vu_reference = self.params.vu_reference.value();
         let level_mode = self.params.level_mode.value();

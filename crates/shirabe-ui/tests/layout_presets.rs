@@ -8,7 +8,7 @@
 use shirabe_ui::egui::{pos2, vec2, Rect};
 use shirabe_ui::layout::{
     arrange, LayoutPreset, TileId, COLUMN_WIDTH, MIN_HISTORY_HEIGHT, MIN_READOUT_HEIGHT,
-    SECTION_GAP,
+    MIN_SPECTRUM_HEIGHT, SECTION_GAP,
 };
 
 fn area(width: f32, height: f32) -> Rect {
@@ -153,7 +153,12 @@ fn stereo_keeps_the_read_out_when_the_window_is_short() {
 
 #[test]
 fn both_presets_place_every_tile_at_the_minimum_window_size() {
-    for preset in [LayoutPreset::Standard, LayoutPreset::Stereo] {
+    for preset in [
+        LayoutPreset::Standard,
+        LayoutPreset::Stereo,
+        LayoutPreset::History,
+        LayoutPreset::Spectrum,
+    ] {
         for (w, h) in [(640.0, 300.0), (640.0, 380.0), (820.0, 500.0)] {
             assert_tiles_fit(preset, area(w, h));
         }
@@ -234,4 +239,53 @@ fn a_tall_history_preset_also_shows_the_scope() {
     assert!(arrangement.tile(TileId::History).is_some());
     assert!(arrangement.tile(TileId::Scope).is_some());
     assert_tiles_fit(LayoutPreset::History, rect);
+}
+
+#[test]
+fn the_spectrum_preset_keeps_the_standard_columns_and_adds_a_full_width_tile() {
+    let rect = area(900.0, 500.0);
+    let arrangement = arrange(LayoutPreset::Spectrum, rect);
+    let standard = arrange(LayoutPreset::Standard, rect);
+
+    // The meter columns and the read-out stay where Standard puts them.
+    for tile in [
+        TileId::Peak,
+        TileId::Level,
+        TileId::Loudness,
+        TileId::Readout,
+    ] {
+        let here = arrangement.tile(tile).unwrap_or_else(|| panic!("{tile:?}"));
+        let there = standard.tile(tile).unwrap_or_else(|| panic!("{tile:?}"));
+        assert!((here.left() - there.left()).abs() < 0.01, "{tile:?}");
+        assert!((here.right() - there.right()).abs() < 0.01, "{tile:?}");
+        assert!((here.top() - there.top()).abs() < 0.01, "{tile:?}");
+    }
+    let spectrum = arrangement.tile(TileId::Spectrum).expect("spectrum");
+    assert!((spectrum.left() - rect.left()).abs() < 0.01);
+    assert!((spectrum.right() - rect.right()).abs() < 0.01);
+    assert!((spectrum.bottom() - rect.bottom()).abs() < 0.01);
+    assert!(spectrum.height() >= MIN_SPECTRUM_HEIGHT);
+    let readout = arrangement.tile(TileId::Readout).expect("read-out");
+    assert!(readout.height() >= MIN_READOUT_HEIGHT);
+    assert!((readout.bottom() + SECTION_GAP - spectrum.top()).abs() < 0.01);
+    assert_tiles_fit(LayoutPreset::Spectrum, rect);
+}
+
+#[test]
+fn the_spectrum_preset_drops_the_tile_before_the_readout() {
+    for (w, h) in [(640.0, 300.0), (640.0, 260.0), (820.0, 240.0)] {
+        let rect = area(w, h);
+        let arrangement = arrange(LayoutPreset::Spectrum, rect);
+        assert!(arrangement.tile(TileId::Spectrum).is_none(), "{w}x{h}");
+        let readout = arrangement.tile(TileId::Readout).expect("read-out");
+        assert!(readout.height() >= MIN_READOUT_HEIGHT, "{w}x{h}");
+        assert!((readout.bottom() - rect.bottom()).abs() < 0.01, "{w}x{h}");
+        assert_tiles_fit(LayoutPreset::Spectrum, rect);
+    }
+    // At the minimum window size there is room for the spectrum again.
+    let rect = area(640.0, 380.0);
+    let arrangement = arrange(LayoutPreset::Spectrum, rect);
+    let spectrum = arrangement.tile(TileId::Spectrum).expect("spectrum");
+    assert!(spectrum.height() >= MIN_SPECTRUM_HEIGHT);
+    assert_tiles_fit(LayoutPreset::Spectrum, rect);
 }

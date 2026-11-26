@@ -48,6 +48,8 @@ fn the_japanese_sample_contains_every_japanese_string() {
 /// Everything else must be translated.
 const TECHNICAL: &[&str] = &[
     "VU",
+    "FFT",
+    "1/3 oct",
     "LRA",
     "PLR",
     "TP ≤",

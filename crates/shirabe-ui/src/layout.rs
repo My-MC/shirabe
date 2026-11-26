@@ -28,10 +28,16 @@ pub const MIN_READOUT_HEIGHT: f32 = 80.0 + 7.0 * 19.0 + 14.0;
 pub const MIN_LOUDNESS_HEIGHT: f32 = 110.0;
 /// Smallest readable height of the loudness history graph.
 pub const MIN_HISTORY_HEIGHT: f32 = 96.0;
+/// Smallest readable height of the spectrum tile.
+pub const MIN_SPECTRUM_HEIGHT: f32 = 120.0;
 /// Share of the meter area the history graph takes when the window has room for it.
 const HISTORY_GRAPH_SHARE: f32 = 0.34;
 /// Largest height the history graph takes, so a tall window still shows the meters.
 const MAX_HISTORY_HEIGHT: f32 = 220.0;
+/// Share of the meter area the spectrum tile takes when the window has room for it.
+const SPECTRUM_SHARE: f32 = 0.38;
+/// Largest height the spectrum tile takes.
+const MAX_SPECTRUM_HEIGHT: f32 = 260.0;
 
 /// A built-in arrangement.
 ///
@@ -46,6 +52,8 @@ pub enum LayoutPreset {
     Stereo,
     /// The Standard meters with a full-width loudness history graph along the bottom.
     History,
+    /// The Standard meters with a full-width FFT / 1/3-octave spectrum along the bottom.
+    Spectrum,
 }
 
 /// One tile with the rectangle it occupies.
@@ -88,6 +96,7 @@ pub fn arrange(preset: LayoutPreset, rect: Rect) -> Arrangement {
         LayoutPreset::Standard => standard(rect),
         LayoutPreset::Stereo => stereo(rect),
         LayoutPreset::History => history(rect),
+        LayoutPreset::Spectrum => spectrum(rect),
     }
 }
 
@@ -187,8 +196,31 @@ fn stereo(rect: Rect) -> Arrangement {
     arrangement
 }
 
-/// The Standard meters with a full-width loudness history graph along the bottom.
+/// The Standard meters with a full-width spectrum along the bottom.
 ///
+/// The meter columns and the read-out keep the Standard geometry, so switching to the view does
+/// not move the numbers. The spectrum is dropped before the read-out in a short window.
+fn spectrum(rect: Rect) -> Arrangement {
+    let needed = MIN_READOUT_HEIGHT + SECTION_GAP + MIN_SPECTRUM_HEIGHT;
+    if rect.height() < needed {
+        return standard(rect);
+    }
+    let spectrum_height = (rect.height() * SPECTRUM_SHARE)
+        .clamp(MIN_SPECTRUM_HEIGHT, MAX_SPECTRUM_HEIGHT)
+        .min(rect.height() - MIN_READOUT_HEIGHT - SECTION_GAP);
+    let meters = Rect::from_min_max(
+        rect.min,
+        pos2(rect.right(), rect.bottom() - spectrum_height - SECTION_GAP),
+    );
+    let mut arrangement = standard(meters);
+    arrangement.place(
+        TileId::Spectrum,
+        Rect::from_min_max(pos2(rect.left(), meters.bottom() + SECTION_GAP), rect.max),
+    );
+    arrangement
+}
+
+/// The Standard meters with a full-width loudness history graph along the bottom.
 /// The meters and the read-out keep the Standard geometry, so the numbers do not move when
 /// the view is selected. The graph is dropped before the read-out: a window too short for
 /// both shows the Standard meters without the scope, and the numeric loudness keeps every

@@ -5,8 +5,8 @@
 //! Values and the programme timer are compared before and after a language change.
 
 use nih_plug::prelude::*;
-use shirabe_plugin::editor::{draw, HistoryView, ScopeView};
-use shirabe_plugin::params::{LoudnessTarget, UiLanguage};
+use shirabe_plugin::editor::{draw, HistoryView, ScopeView, SpectrumView};
+use shirabe_plugin::params::{LayoutPreset, LoudnessTarget, UiLanguage};
 use shirabe_plugin::shared::SharedMeters;
 use shirabe_plugin::ShirabeParams;
 use shirabe_ui::egui::{self, pos2, vec2, Rect};
@@ -106,6 +106,7 @@ fn render(
     let theme = Theme::dark();
     let mut scope = ScopeView::new();
     let mut history = HistoryView::new();
+    let mut spectrum = SpectrumView::new();
     let ctx = egui::Context::default();
     let output = ctx.run(
         egui::RawInput {
@@ -123,6 +124,7 @@ fn render(
                     &theme,
                     &mut scope,
                     &mut history,
+                    &mut spectrum,
                     text,
                     true,
                 );
@@ -399,6 +401,34 @@ fn the_note_beside_the_oscillator_fits_at_the_minimum_size() {
                     "{language:?} {oscillator}: {label:?} {bounds:?} clip {clip:?}"
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn the_spectrum_layout_fits_at_the_minimum_size_in_both_languages() {
+    for (language, text) in [
+        (UiLanguage::English, Text::new(Lang::English, true)),
+        (UiLanguage::Japanese, Text::new(Lang::Japanese, true)),
+    ] {
+        let params = ShirabeParams::default();
+        set_language(&params, language);
+        // SAFETY: the pointer belongs to `params`, which outlives the frame.
+        unsafe {
+            params.layout_preset.as_ptr().set_normalized_value(
+                params
+                    .layout_preset
+                    .preview_normalized(LayoutPreset::Spectrum),
+            );
+        }
+        assert_eq!(params.layout_preset.value(), LayoutPreset::Spectrum);
+        let shared = live_meters();
+        let frame = render(&params, &shared, text, vec2(640.0, 380.0), &TestGuiContext);
+        for (label, bounds, clip) in frame.texts() {
+            assert!(
+                clip.contains_rect(bounds) && bounds.right() <= 632.0,
+                "{language:?}: {label:?} {bounds:?} clip {clip:?}"
+            );
         }
     }
 }

@@ -152,6 +152,7 @@ texts! {
     layout_standard: "Standard", "標準";
     layout_stereo: "Stereo", "ステレオ";
     layout_history: "History", "履歴";
+    layout_spectrum: "Spectrum", "スペクトラム";
 
     // Meter tiles.
     meter_reset_hint: "Double-click to reset integrated loudness, loudness range and maxima",
@@ -171,6 +172,13 @@ texts! {
     history_span_label: "3 min", "3 分";
     history_time_axis: "s ago", "秒前";
     history_waiting: "waiting for audio", "音声を待っています";
+    spectrum_title: "SPECTRUM", "スペクトラム";
+    spectrum_mode_fft: "FFT", "FFT";
+    spectrum_mode_rta: "1/3 oct", "1/3 oct";
+    spectrum_waiting: "waiting for audio", "音声を待っています";
+    spectrum_label: "Spectrum", "スペクトラム";
+    spectrum_mode_hint: "Switch between the FFT line and the 1/3-octave bars",
+        "FFT の線と 1/3 オクターブのバーを切り替えます";
 
     // Loudness read-out.
     integrated: "INTEGRATED", "統合ラウドネス";

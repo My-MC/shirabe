@@ -11,6 +11,7 @@ use std::sync::Arc;
 use nih_plug::prelude::*;
 use nih_plug_egui::{create_egui_editor, resizable_window::ResizableWindow, widgets};
 use shirabe_dsp::history::{HISTORY_CAPACITY, HISTORY_INTERVAL_SECONDS};
+use shirabe_dsp::spectrum::{SpectrumAnalyzer, SpectrumConfig};
 use shirabe_dsp::MINUS_INFINITY_DB;
 use shirabe_ui::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Painter, Rect, RichText, Sense,
@@ -23,6 +24,7 @@ use shirabe_ui::scope::{
     draw as draw_scope, is_clipped, AutoGain, ScopePlane, ScopeRender, Trail, MAX_POINTS,
     TRAIL_CAPACITY, TRAIL_SECONDS,
 };
+use shirabe_ui::spectrum::{self as spectrum_tile, SpectrumRender};
 use shirabe_ui::view::{MeterView, MeterViewRegistry};
 use shirabe_ui::{
     draw_level_bar, draw_marker, draw_scale_labels, format_db, format_lufs, MeterScale, Theme, Zone,
@@ -30,7 +32,7 @@ use shirabe_ui::{
 
 use crate::params::{
     LayoutPreset, LevelMode, LoudnessScale, LoudnessTarget, LoudnessUnit, ShirabeParams,
-    TargetSpec, UiLanguage,
+    SpectrumMode, TargetSpec, UiLanguage,
 };
 use crate::shared::SharedMeters;
 
@@ -61,6 +63,7 @@ pub(crate) fn create(
             theme: Theme::dark(),
             scope: ScopeView::new(),
             history: HistoryView::new(),
+            spectrum: SpectrumView::new(),
             japanese_font_installed: false,
             japanese: None,
             japanese_check_pending: false,
@@ -87,6 +90,7 @@ pub(crate) fn create(
                     &state.theme,
                     &mut state.scope,
                     &mut state.history,
+                    &mut state.spectrum,
                     text,
                     japanese_attempted,
                 );
@@ -110,6 +114,7 @@ struct EditorState {
     theme: Theme,
     scope: ScopeView,
     history: HistoryView,
+    spectrum: SpectrumView,
     /// Whether installing the CJK fallback has been attempted for this context.
     japanese_font_installed: bool,
     /// Whether the current fonts cover the Japanese catalogue (cached per context).
@@ -164,19 +169,21 @@ pub fn draw(
     theme: &Theme,
     scope: &mut ScopeView,
     history: &mut HistoryView,
+    spectrum: &mut SpectrumView,
     text: Text,
     japanese_attempted: bool,
 ) {
     header(ui, params, shared, setter, theme, text, japanese_attempted);
     ui.separator();
 
-    let controls = if params.loudness_target.value() == LoudnessTarget::Custom {
-        CONTROLS_HEIGHT + CUSTOM_ROW_HEIGHT
-    } else {
-        CONTROLS_HEIGHT
-    };
+    let mut controls = CONTROLS_HEIGHT;
+    if params.loudness_target.value() == LoudnessTarget::Custom {
+        controls += CUSTOM_ROW_HEIGHT;
+    }
     let height = (ui.available_height() - controls).max(120.0);
-    meters(ui, params, shared, theme, height, scope, history, text);
+    meters(
+        ui, params, shared, theme, height, scope, history, spectrum, text,
+    );
 
     ui.separator();
     settings(ui, params, setter, text);
@@ -280,6 +287,7 @@ fn header(
                 LayoutPreset::Standard,
                 LayoutPreset::Stereo,
                 LayoutPreset::History,
+                LayoutPreset::Spectrum,
             ],
             |preset| layout_preset_name(text, preset),
         );
@@ -481,6 +489,7 @@ fn meters(
     height: f32,
     scope: &mut ScopeView,
     history: &mut HistoryView,
+    spectrum: &mut SpectrumView,
     text: Text,
 ) {
     let width = ui.available_width();
@@ -509,6 +518,7 @@ fn meters(
         loudness: &loudness,
         scope,
         history,
+        spectrum,
         now,
         channels,
         target,
@@ -528,6 +538,7 @@ struct MeterCtx<'a> {
     loudness: &'a LoudnessView,
     scope: &'a mut ScopeView,
     history: &'a mut HistoryView,
+    spectrum: &'a mut SpectrumView,
     now: f64,
     channels: usize,
     target: TargetSpec,
@@ -546,6 +557,7 @@ fn tile_view(id: TileId) -> fn(&mut MeterCtx<'_>, &Painter, Rect) {
         TileId::Readout => tile_readout,
         TileId::Scope => tile_scope,
         TileId::History => tile_history,
+        TileId::Spectrum => tile_spectrum,
     }
 }
 
@@ -619,6 +631,22 @@ fn tile_history(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
     history_graph::draw(painter, rect, &graph, ctx.theme);
 }
 
+fn tile_spectrum(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
+    ctx.spectrum.update(ctx.shared);
+    let analyzer = ctx.spectrum.analyzer();
+    let render = SpectrumRender {
+        mode: ctx.params.spectrum_mode.value().display(),
+        bins_db: analyzer.bins_db(),
+        sample_rate: analyzer.sample_rate(),
+        fft_size: analyzer.fft_size(),
+        bands_db: analyzer.bands_db(),
+        peak: analyzer.peak(),
+        ready: analyzer.is_ready(),
+        text: ctx.text,
+    };
+    spectrum_tile::draw(painter, rect, &render, ctx.theme);
+}
+
 /// Display-only state of the loudness history graph.
 ///
 /// The measured path never sees this state: it copies the newest points out of the capture
@@ -657,6 +685,47 @@ impl HistoryView {
             );
         }
         &self.points[..count]
+    }
+}
+
+/// Display-only state of the spectrum tile.
+///
+/// The analyser allocates its FFT plan and buffers once, when the view is created or when the
+/// sample rate changes. The audio callback only writes the capture ring.
+pub struct SpectrumView {
+    analyzer: SpectrumAnalyzer,
+    sample_rate: f32,
+}
+
+impl SpectrumView {
+    /// Creates an empty view prepared for 48 kHz.
+    pub fn new() -> Self {
+        let sample_rate = 48_000.0;
+        Self {
+            analyzer: SpectrumAnalyzer::new(sample_rate, SpectrumConfig::default()),
+            sample_rate,
+        }
+    }
+
+    /// Consumes any new captured audio, ready for [`Self::analyzer`] this frame.
+    pub fn update(&mut self, shared: &SharedMeters) {
+        let rate = shared.sample_rate();
+        if rate > 0.0 && (rate - self.sample_rate).abs() > 0.5 {
+            self.analyzer = SpectrumAnalyzer::new(rate, SpectrumConfig::default());
+            self.sample_rate = rate;
+        }
+        self.analyzer.analyze(&shared.spectrum);
+    }
+
+    /// The analyser holding the values drawn this frame.
+    pub fn analyzer(&self) -> &SpectrumAnalyzer {
+        &self.analyzer
+    }
+}
+
+impl Default for SpectrumView {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1520,7 +1589,28 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter, tex
             setter.set_parameter(&params.auto_reset, auto);
             setter.end_set_parameter(&params.auto_reset);
         }
+        // The display choice belongs to the Spectrum layout and shares the loudness row, so
+        // no control row (and no meter height) is lost at the 640 px minimum width.
+        if params.layout_preset.value() == LayoutPreset::Spectrum {
+            ui.separator();
+            ui.scope(|ui| {
+                combo(
+                    ui,
+                    "spectrum-mode",
+                    &params.spectrum_mode,
+                    setter,
+                    &[SpectrumMode::Fft, SpectrumMode::Rta],
+                    |mode| match mode {
+                        SpectrumMode::Fft => text.spectrum_mode_fft(),
+                        SpectrumMode::Rta => text.spectrum_mode_rta(),
+                    },
+                );
+            })
+            .response
+            .on_hover_text(text.spectrum_mode_hint());
+        }
     });
+
     if params.loudness_target.value() == LoudnessTarget::Custom {
         ui.horizontal(|ui| {
             ui.label(text.custom());
@@ -1610,6 +1700,7 @@ fn layout_preset_name(text: Text, preset: LayoutPreset) -> &'static str {
         LayoutPreset::Standard => text.layout_standard(),
         LayoutPreset::Stereo => text.layout_stereo(),
         LayoutPreset::History => text.layout_history(),
+        LayoutPreset::Spectrum => text.layout_spectrum(),
     }
 }
 
@@ -1690,6 +1781,7 @@ mod tests {
             LayoutPreset::Standard,
             LayoutPreset::Stereo,
             LayoutPreset::History,
+            LayoutPreset::Spectrum,
         ] {
             for size in [vec2(820.0, 500.0), vec2(640.0, 260.0)] {
                 let rect = Rect::from_min_size(pos2(0.0, 0.0), size);
@@ -1734,6 +1826,7 @@ mod tests {
         let theme = Theme::dark();
         let mut scope = ScopeView::new();
         let mut history = HistoryView::new();
+        let mut spectrum = SpectrumView::new();
         let ctx = egui::Context::default();
         let output = ctx.run(
             egui::RawInput {
@@ -1753,6 +1846,7 @@ mod tests {
                         &theme,
                         &mut scope,
                         &mut history,
+                        &mut spectrum,
                         Text::new(Lang::English, true),
                         true,
                     );
@@ -1833,10 +1927,45 @@ mod tests {
             LayoutPreset::Stereo,
             LayoutPreset::Standard,
             LayoutPreset::History,
+            LayoutPreset::Spectrum,
         ] {
             let (output, theme) = window_frame(preset, vec2(640.0, 380.0));
             assert_readout_rows_fit(&output, &theme, &format!("{preset:?} at the minimum size"));
         }
+    }
+
+    fn frame_text(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_spectrum_layout_draws_the_tile_and_its_display_choice() {
+        let (output, theme) = window_frame(LayoutPreset::Spectrum, vec2(900.0, 560.0));
+        assert_readout_rows_fit(&output, &theme, "Spectrum");
+        let texts = frame_text(&output);
+        assert!(
+            texts.iter().any(|text| text.contains("SPECTRUM")),
+            "{texts:?}"
+        );
+        assert!(texts.iter().any(|text| text == "FFT"), "{texts:?}");
+        assert!(
+            texts.iter().any(|text| text == "Spectrum"),
+            "the display row is missing: {texts:?}"
+        );
+
+        // At the minimum size the tile and its row are dropped; the numbers stay readable.
+        let (output, theme) = window_frame(LayoutPreset::Spectrum, vec2(640.0, 380.0));
+        assert_readout_rows_fit(&output, &theme, "Spectrum at the minimum size");
+        let texts = frame_text(&output);
+        assert!(!texts.iter().any(|text| text.contains("SPECTRUM")));
+        assert!(!texts.iter().any(|text| text == "1/3 octave"));
     }
 
     #[test]
@@ -1894,6 +2023,7 @@ mod tests {
             theme: Theme::dark(),
             scope: ScopeView::new(),
             history: HistoryView::new(),
+            spectrum: SpectrumView::new(),
             japanese_font_installed: false,
             japanese: None,
             japanese_check_pending: false,
@@ -1913,6 +2043,7 @@ mod tests {
             theme: Theme::dark(),
             scope: ScopeView::new(),
             history: HistoryView::new(),
+            spectrum: SpectrumView::new(),
             japanese_font_installed: false,
             japanese: None,
             japanese_check_pending: false,

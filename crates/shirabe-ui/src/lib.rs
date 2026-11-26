@@ -9,6 +9,7 @@ pub mod i18n;
 pub mod layout;
 pub mod scale;
 pub mod scope;
+pub mod spectrum;
 pub mod theme;
 pub mod tile;
 pub mod view;

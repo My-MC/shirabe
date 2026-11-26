@@ -32,7 +32,7 @@ use nih_plug::prelude::ParamSetter;
 use shirabe_plugin::engine::MeterEngine;
 use shirabe_plugin::shared::SharedMeters;
 use shirabe_plugin::{
-    editor::{self, HistoryView, ScopeView},
+    editor::{self, HistoryView, ScopeView, SpectrumView},
     fonts, ShirabeParams,
 };
 use shirabe_ui::i18n::Text;
@@ -106,6 +106,7 @@ struct App {
     scope: ScopeView,
     /// Display-only history of the loudness graph.
     history: HistoryView,
+    spectrum: SpectrumView,
     last_check: Instant,
     /// Whether the appearance preset window is open.
     show_appearance: bool,
@@ -178,6 +179,7 @@ impl App {
             saved_params: settings.params.clone(),
             scope: ScopeView::new(),
             history: HistoryView::new(),
+            spectrum: SpectrumView::new(),
             last_check: Instant::now(),
             show_appearance: false,
             appearance_target: appearance::Target::new(
@@ -956,6 +958,7 @@ impl eframe::App for App {
                 &self.theme,
                 &mut self.scope,
                 &mut self.history,
+                &mut self.spectrum,
                 text,
                 true,
             );

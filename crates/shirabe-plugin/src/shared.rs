@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use nih_plug::prelude::AtomicF32;
 use shirabe_dsp::history::LoudnessHistory;
 use shirabe_dsp::scope::StereoScope;
+use shirabe_dsp::spectrum::SpectrumCapture;
 use shirabe_dsp::stereo::StereoStatsReadout;
 use shirabe_dsp::{ChannelLayout, LoudnessReadout, PeakMeter, MINUS_INFINITY_DB};
 
@@ -167,6 +168,9 @@ pub struct SharedMeters {
     /// Momentary and short-term loudness at 10 points per second (audio thread writes, editor
     /// reads). Display-only: it never feeds back into a measurement.
     pub history: LoudnessHistory,
+    /// Mono capture for the spectrum tile (audio thread writes, editor analyses it on the UI
+    /// thread). Display-only.
+    pub spectrum: SpectrumCapture,
     active_channels: AtomicUsize,
     sample_rate: AtomicF32,
     reset_requested: AtomicBool,
@@ -187,6 +191,7 @@ impl SharedMeters {
             stereo: StereoShared::new(),
             scope: StereoScope::new(),
             history: LoudnessHistory::new(),
+            spectrum: SpectrumCapture::new(),
             active_channels: AtomicUsize::new(2),
             sample_rate: AtomicF32::new(0.0),
             reset_requested: AtomicBool::new(false),
@@ -216,6 +221,7 @@ impl SharedMeters {
         self.stereo.clear();
         self.scope.clear();
         self.history.clear();
+        self.spectrum.clear();
     }
 
     /// Read-outs of channel `index` (must be below [`MAX_CHANNELS`]).

@@ -22,17 +22,20 @@ pub enum TileId {
     Scope,
     /// Momentary and short-term loudness over time.
     History,
+    /// FFT spectrum or 1/3-octave real-time analysis.
+    Spectrum,
 }
 
 impl TileId {
     /// Every tile, in the order the editor draws them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Peak,
         Self::Level,
         Self::Loudness,
         Self::Readout,
         Self::Scope,
         Self::History,
+        Self::Spectrum,
     ];
 
     /// Name used in a saved layout; stable forever.
@@ -44,6 +47,7 @@ impl TileId {
             Self::Readout => "readout",
             Self::Scope => "scope",
             Self::History => "history",
+            Self::Spectrum => "spectrum",
         }
     }
 }
