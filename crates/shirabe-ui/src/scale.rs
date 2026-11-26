@@ -114,6 +114,21 @@ impl MeterScale {
         labels: TickLabels::Text(&["7", "6", "5", "4", "3", "2", "1"]),
     };
 
+    /// IEEE programme meter scale (IEEE Std 152-1991 §1.3.16, Fig 5): decibel-linear, labelled
+    /// every 4 dB from -20 to +4 with a mark every 2 dB (the minor marks of Fig 5). TEST is the
+    /// midpoint of the 24 dB minimum scale range (§1.2) and Fig 5 prints it at -8, so the
+    /// values are dB relative to TEST + 8.
+    pub const PPM_IEEE: MeterScale = MeterScale {
+        law: ScaleLaw::Breakpoints(&[(-20.0, 0.0), (4.0, 1.0)]),
+        min: -20.0,
+        ticks: &[
+            4.0, 2.0, 0.0, -2.0, -4.0, -6.0, -8.0, -10.0, -12.0, -14.0, -16.0, -18.0, -20.0,
+        ],
+        labels: TickLabels::Text(&[
+            "+4", "", "0", "", "-4", "", "-8", "", "-12", "", "-16", "", "-20",
+        ]),
+    };
+
     /// EBU Mode loudness scale 'EBU +9' (EBU Tech 3341 §2.7): -18 to +9 LU relative to the
     /// target.
     pub const LOUDNESS_EBU_9: MeterScale = MeterScale {
@@ -217,8 +232,9 @@ fn db_to_ratio(db: f32) -> f32 {
 mod tests {
     use super::*;
 
-    fn all() -> [MeterScale; 7] {
+    fn all() -> [MeterScale; 8] {
         [
+            MeterScale::PPM_IEEE,
             MeterScale::PEAK_DBFS,
             MeterScale::VU,
             MeterScale::PPM_TYPE_I,
@@ -292,6 +308,22 @@ mod tests {
         let s = MeterScale::PPM_BBC;
         assert_eq!(s.ticks, &[12.0, 8.0, 4.0, 0.0, -4.0, -8.0, -14.0]);
         assert_eq!(s.label(3, 0.0), "4");
+    }
+
+    /// IEEE Std 152-1991 §1.3.16: at least 24 dB, decibel-linear, 4 dB increments, TEST
+    /// (printed at -8 in Fig 5) at the midpoint.
+    #[test]
+    fn ieee_ppm_scale() {
+        let s = MeterScale::PPM_IEEE;
+        assert_eq!(s.position(-20.0), 0.0);
+        assert_eq!(s.position(4.0), 1.0);
+        assert!((s.position(-8.0) - 0.5).abs() < 1e-6);
+        for db in [-20.0, -16.0, -12.0, -8.0, -4.0, 0.0] {
+            let step = s.position(db + 4.0) - s.position(db);
+            assert!((step - 4.0 / 24.0).abs() < 1e-6);
+        }
+        assert_eq!(s.label(6, 0.0), "-8");
+        assert_eq!(s.label(5, 0.0), "");
     }
 
     /// EBU Tech 3341 §2.7: 'EBU +9' is -18..+9 LU (-41..-14 LUFS at a -23 LUFS target).

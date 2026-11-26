@@ -31,7 +31,7 @@ const CONTROLS_HEIGHT: f32 = 92.0;
 const SECTION_GAP: f32 = 14.0;
 const LOUDNESS_PANEL_WIDTH: f32 = 160.0;
 
-/// Alignment level in dBFS (EBU R 68): TEST on the EBU scale, mark 4 on the BBC scale.
+/// Alignment level in dBFS (EBU R 68): TEST on the EBU and IEEE scales, mark 4 on the BBC scale.
 const ALIGNMENT_DBFS: f32 = -18.0;
 /// Permitted maximum level in dBFS: 0 dB on the Type I scale, +9 on the EBU scale.
 const PERMITTED_MAX_DBFS: f32 = -9.0;
@@ -376,6 +376,14 @@ impl LevelView {
                 offset: -ALIGNMENT_DBFS,
                 // Mark 6 is the permitted maximum level (+8 dB above mark 4).
                 over_from: 8.0,
+            },
+            LevelMode::PpmIeee => Self {
+                scale: MeterScale::PPM_IEEE,
+                title: "PPM IEEE  dB",
+                // TEST (the alignment level) is printed at -8 on the IEEE scale.
+                offset: -ALIGNMENT_DBFS - 8.0,
+                // Fig 5 draws the range from 0 to +4 as a heavy band.
+                over_from: 0.0,
             },
         }
     }
@@ -833,6 +841,7 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
                 LevelMode::PpmTypeI,
                 LevelMode::PpmTypeII,
                 LevelMode::PpmTypeIIBbc,
+                LevelMode::PpmIeee,
             ],
             level_mode_name,
         );
@@ -849,6 +858,7 @@ fn level_mode_name(m: LevelMode) -> &'static str {
         LevelMode::PpmTypeI => "PPM Type I (0 dB = -9 dBFS)",
         LevelMode::PpmTypeII => "PPM EBU (TEST = -18 dBFS)",
         LevelMode::PpmTypeIIBbc => "PPM BBC (4 = -18 dBFS)",
+        LevelMode::PpmIeee => "PPM IEEE (TEST -8 = -18 dBFS)",
     }
 }
 

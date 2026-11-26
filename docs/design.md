@@ -53,7 +53,7 @@ Shirabe Meter Suite の構成、スレッド設計、メーターの仕様、互
 | ラウドネス | ITU-R BS.1770-5、EBU Tech 3341 / 3342 | M、S、I、LRA、EBU +9 / +18 目盛り、LUFS / LU 表示、I と LRA の一時停止（実装済み）、PLR（未実装） | 1 |
 | ラウドネス目標値 | ARIB TR-B32、EBU R 128、ATSC A/85、Spotify | 目標値と許容範囲のプリセット | 1（実装済み） |
 | VU | IEC 60268-17（300 ms で 99 %、オーバーシュート 1〜1.5 %） | 基準レベル（0 VU = -24〜-8 dBFS、初期値 -18 dBFS） | 1（実装済み） |
-| PPM | IEC 60268-10、EBU Tech 3205（Type I：0 dB = -9 dBFS、Type II：TEST / 4 = -18 dBFS） | Type I、EBU 目盛り（IIb）、BBC 目盛り（IIa） | 1（実装済み） |
+| PPM | IEC 60268-10、EBU Tech 3205（Type I：0 dB = -9 dBFS、Type II：TEST / 4 = -18 dBFS） | Type I、EBU 目盛り（IIb）、BBC 目盛り（IIa）、IEEE 目盛り（IEEE Std 152-1991） | 1（実装済み） |
 | リサージュ | L/R を 45° 回転した M/S 表示 | 残光、自動ゲイン、点と線の切り替え | 2 |
 | 相関・バランス | -1〜+1 の相関、L/R バランス | 積分時間 | 2 |
 | ベクタースコープ | 振幅と角度の極座標ヒストグラム | 減衰時間 | 2 |

@@ -113,6 +113,11 @@ pub enum LevelMode {
     #[id = "ppm2bbc"]
     #[name = "PPM Type IIa (BBC)"]
     PpmTypeIIBbc,
+    /// Quasi-peak programme meter with the preferred IEEE scale (IEEE Std 152-1991 §1.3.16,
+    /// Fig 5). The dynamics are the same as Type II (EBU Tech 3205 normal mode).
+    #[id = "ppm2ieee"]
+    #[name = "PPM (IEEE 152)"]
+    PpmIeee,
 }
 
 /// All parameters of the plugin.

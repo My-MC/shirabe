@@ -223,7 +223,10 @@ impl Plugin for Shirabe {
                     vu.process(channel);
                     readout.vu.store(vu.vu(), Ordering::Relaxed);
                 }
-                LevelMode::PpmTypeI | LevelMode::PpmTypeII | LevelMode::PpmTypeIIBbc => {
+                LevelMode::PpmTypeI
+                | LevelMode::PpmTypeII
+                | LevelMode::PpmTypeIIBbc
+                | LevelMode::PpmIeee => {
                     let ppm = if level_mode == LevelMode::PpmTypeI {
                         &mut self.ppm_type_i[index]
                     } else {
