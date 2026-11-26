@@ -1,9 +1,9 @@
 //! Measurement results as CSV or JSON for the standalone application.
 //!
 //! The values are copied on the UI thread when the user asks for an export, so a
-//! file always describes one instant of the measurement even when audio keeps
-//! running while it is written. The recorded loudness history is copied at the
-//! same time.
+//! file is not changed by audio that keeps running while it is written. The values
+//! are read one by one, so while measuring each may differ from the others by up
+//! to one audio block. The recorded loudness history is copied at the same time.
 //!
 //! Nothing here changes a measurement: the meters, the parameters and the
 //! audio path stay untouched.
@@ -436,7 +436,20 @@ fn push_row(out: &mut String, fields: &[&str; 6]) {
 }
 
 /// Quotes a field only when it contains a comma, a quote or a line break.
+///
+/// Text that starts like a spreadsheet formula (`=`, `+`, `-`, `@`, tab, carriage return)
+/// gets a leading `'`, so a device or file name cannot run as a formula when the export is
+/// opened in a spreadsheet. Numbers keep their sign.
 fn escape_csv(field: &str) -> String {
+    let formula_like = field.starts_with(['=', '+', '-', '@', '\t', '\r'])
+        && !field.parse::<f64>().is_ok_and(f64::is_finite);
+    let neutral;
+    let field = if formula_like {
+        neutral = format!("'{field}");
+        neutral.as_str()
+    } else {
+        field
+    };
     if field.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", field.replace('"', "\"\""))
     } else {
@@ -594,6 +607,29 @@ pub fn save(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn csv_text_that_a_spreadsheet_would_run_as_a_formula_is_neutralised() {
+        for text in [
+            "=cmd|' /C calc'!A0",
+            "+SUM(A1)",
+            "-2+3",
+            "@x",
+            "\tname",
+            "\rname",
+        ] {
+            let escaped = escape_csv(text);
+            assert!(
+                escaped.starts_with('\'') || escaped.starts_with("\"'"),
+                "{text:?} -> {escaped:?}"
+            );
+        }
+        // Numbers keep their sign so the value column stays numeric.
+        assert_eq!(escape_csv("-23.00"), "-23.00");
+        assert_eq!(escape_csv("+1"), "+1");
+        assert_eq!(escape_csv("plain"), "plain");
+    }
+
     use super::*;
 
     fn snapshot() -> Snapshot {
