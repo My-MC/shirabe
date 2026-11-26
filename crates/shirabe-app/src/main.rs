@@ -1,15 +1,21 @@
 //! Shirabe Meter Suite standalone application.
 //!
-//! Measures an audio input device with the same meters and the same view as the plugin.
+//! Measures an audio input device, what the computer plays, or a local WAV / FLAC file
+//! played through an output device, with the same meters and the same view as the plug-in.
 
 // Release builds on Windows should not open a console window next to the GUI.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod audio;
 mod context;
+mod decode;
 mod fonts;
+mod output;
+mod player;
 #[cfg(target_os = "linux")]
 mod pulse;
+mod resample;
+mod ring;
 mod settings;
 #[cfg(target_os = "macos")]
 mod tap;
@@ -25,6 +31,9 @@ use shirabe_ui::Theme;
 
 use audio::{Choice, Source};
 use context::StandaloneContext;
+use decode::format_time;
+use output::DeviceRef;
+use player::Playback;
 use settings::Settings;
 
 struct App {
@@ -39,6 +48,11 @@ struct App {
     host: String,
     inputs: Vec<Choice>,
     playing: Vec<Choice>,
+    outputs: Vec<DeviceRef>,
+    /// Output device for file playback; `None` uses the default output.
+    output: Option<DeviceRef>,
+    /// Path typed or dropped for file playback.
+    file: String,
     /// Parameter values at the last save, to save again only after a change.
     saved_params: std::collections::BTreeMap<String, f32>,
     last_check: std::time::Instant,
@@ -61,7 +75,12 @@ impl App {
         context::load_params(params.as_ref(), &settings.params);
         let source = settings
             .source
+            .clone()
             .unwrap_or_else(|| audio::default_source().unwrap_or_default());
+        let file = match &source {
+            Source::File { path } => path.clone(),
+            _ => String::new(),
+        };
 
         let hosts = audio::hosts();
         let host = match &source {
@@ -78,12 +97,20 @@ impl App {
             start_error: None,
             inputs: audio::inputs(&host),
             playing: audio::playing(&host),
+            outputs: output::outputs(&host),
+            output: settings.output.clone(),
+            file,
             hosts,
             host,
-            saved_params: settings.params,
+            saved_params: settings.params.clone(),
             last_check: std::time::Instant::now(),
         };
-        app.select(source);
+        // A saved file is not started automatically; the user presses Play.
+        if matches!(source, Source::File { .. }) {
+            app.source = source;
+        } else {
+            app.select(source);
+        }
         app
     }
 
@@ -91,8 +118,16 @@ impl App {
     fn select(&mut self, source: Source) {
         // Stop the old stream first: some drivers allow only one stream per device.
         self.running = None;
+        if let Source::File { path } = &source {
+            if path.trim().is_empty() {
+                // The mode is valid without a file; playback starts once one is chosen.
+                self.source = source;
+                self.start_error = None;
+                return;
+            }
+        }
         let engine = MeterEngine::new(self.params.clone(), self.shared.clone());
-        match audio::start(&source, engine) {
+        match audio::start(&source, engine, self.output.as_ref()) {
             Ok(r) => {
                 self.running = Some(r);
                 self.start_error = None;
@@ -100,9 +135,15 @@ impl App {
             }
             Err(e) => {
                 self.start_error = Some(format!("{e:#}"));
+                // Silence keeps the meters falling instead of freezing at the last value.
                 let engine = MeterEngine::new(self.params.clone(), self.shared.clone());
-                self.running = audio::start(&Source::None, engine).ok();
-                self.source = Source::None;
+                self.running = audio::start(&Source::None, engine, None).ok();
+                if !matches!(source, Source::File { .. }) {
+                    self.source = Source::None;
+                } else {
+                    // Keep the file mode so that the path can be corrected.
+                    self.source = source;
+                }
             }
         }
     }
@@ -112,6 +153,7 @@ impl App {
         Settings {
             source: Some(self.source.clone()),
             params: self.saved_params.clone(),
+            output: self.output.clone(),
         }
         .save();
     }
@@ -131,6 +173,19 @@ impl App {
     fn refresh_devices(&mut self) {
         self.inputs = audio::inputs(&self.host);
         self.playing = audio::playing(&self.host);
+        self.outputs = output::outputs(&self.host);
+        // A device of another audio API cannot be used with this one.
+        if self
+            .output
+            .as_ref()
+            .is_some_and(|device| device.host != self.host)
+        {
+            self.output = None;
+        }
+    }
+
+    fn playback(&self) -> Option<&Playback> {
+        self.running.as_ref().and_then(|r| r.playback.as_ref())
     }
 
     fn audio_bar(&mut self, ui: &mut egui::Ui) {
@@ -150,14 +205,17 @@ impl App {
             }
 
             ui.label("Source");
-            let current = self
-                .inputs
-                .iter()
-                .chain(&self.playing)
-                .find(|c| c.source == self.source)
-                .map_or_else(|| "None".to_owned(), |c| c.label.clone());
+            let current = match &self.source {
+                Source::File { path } => file_label(path),
+                _ => self
+                    .inputs
+                    .iter()
+                    .chain(&self.playing)
+                    .find(|c| c.source == self.source)
+                    .map_or_else(|| "None".to_owned(), |c| c.label.clone()),
+            };
             egui::ComboBox::from_id_salt("audio-source")
-                .width(300.0)
+                .width(320.0)
                 .selected_text(current.as_str())
                 .show_ui(ui, |ui| {
                     if ui
@@ -189,6 +247,18 @@ impl App {
                             }
                         }
                     }
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("File playback")
+                            .small()
+                            .color(self.theme.text_dim),
+                    );
+                    let selected = matches!(self.source, Source::File { .. });
+                    if ui.selectable_label(selected, "Audio file").clicked() {
+                        new_source = Some(Source::File {
+                            path: self.file.trim().to_owned(),
+                        });
+                    }
                 });
             if ui
                 .button("Refresh")
@@ -210,10 +280,7 @@ impl App {
                 }
             }
             if let Some(e) = &self.start_error {
-                ui.label(
-                    egui::RichText::new(format!("Cannot open the device: {e}"))
-                        .color(self.theme.over),
-                );
+                ui.label(egui::RichText::new(format!("Cannot start: {e}")).color(self.theme.over));
             }
         });
         if let Some(s) = new_source {
@@ -223,13 +290,130 @@ impl App {
             }
         }
     }
+
+    /// Output device, file and transport; only shown for file playback.
+    fn playback_bar(&mut self, ui: &mut egui::Ui) {
+        let (paused, ended, position, duration) = match self.playback() {
+            Some(p) => (p.paused(), p.ended(), p.position(), p.duration()),
+            None => (false, false, 0.0, None),
+        };
+        let mut new_output: Option<DeviceRef> = None;
+        let mut start = false;
+        let mut toggle_pause = false;
+        ui.horizontal(|ui| {
+            ui.label("Output");
+            let current = self
+                .output
+                .as_ref()
+                .map_or_else(|| "Default".to_owned(), |d| d.label().to_owned());
+            egui::ComboBox::from_id_salt("playback-output")
+                .width(210.0)
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    for device in &self.outputs {
+                        if ui
+                            .selectable_label(self.output.as_ref() == Some(device), device.label())
+                            .clicked()
+                        {
+                            new_output = Some(device.clone());
+                        }
+                    }
+                });
+
+            ui.label("File");
+            let mut file = std::mem::take(&mut self.file);
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut file)
+                    .desired_width(280.0)
+                    .hint_text("WAV or FLAC path; a dropped file works too"),
+            );
+            self.file = file;
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                start = true;
+            }
+
+            if self.playback().is_some() {
+                if ui
+                    .button(if paused { "Resume" } else { "Pause" })
+                    .on_hover_text("Pause keeps the position; the meters fall")
+                    .clicked()
+                {
+                    toggle_pause = true;
+                }
+                if ui
+                    .button("From start")
+                    .on_hover_text("Play the file again from the beginning")
+                    .clicked()
+                {
+                    start = true;
+                }
+            } else if ui
+                .button("Play")
+                .on_hover_text("Play the file and measure the stored samples")
+                .clicked()
+            {
+                start = true;
+            }
+            let total = duration.map_or_else(|| "-:--".to_owned(), format_time);
+            let mut text = format!("{} / {}", format_time(position), total);
+            if ended {
+                text.push_str("  (end)");
+            }
+            ui.label(egui::RichText::new(text).color(self.theme.text_dim));
+        });
+
+        if let Some(device) = new_output {
+            if self.output.as_ref() != Some(&device) {
+                self.output = Some(device);
+                if let Source::File { path } = self.source.clone() {
+                    if !path.trim().is_empty() {
+                        self.select(Source::File { path });
+                    }
+                }
+                self.save_settings();
+            }
+        }
+        if toggle_pause {
+            if let Some(p) = self.playback() {
+                p.set_paused(!p.paused());
+            }
+        }
+        if start {
+            self.select(Source::File {
+                path: self.file.trim().to_owned(),
+            });
+            self.save_settings();
+        }
+    }
+
+    /// Starts a file dropped on the window.
+    fn take_dropped_file(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .find_map(|f| f.path.as_ref().map(|p| p.display().to_string()))
+        });
+        if let Some(path) = dropped {
+            self.file = path.clone();
+            self.select(Source::File { path });
+            self.save_settings();
+        }
+    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Meters move continuously, so redraw every frame.
         ctx.request_repaint();
-        egui::TopBottomPanel::top("audio").show(ctx, |ui| self.audio_bar(ui));
+        self.take_dropped_file(ctx);
+        egui::TopBottomPanel::top("audio").show(ctx, |ui| {
+            self.audio_bar(ui);
+            if matches!(self.source, Source::File { .. }) {
+                ui.separator();
+                self.playback_bar(ui);
+            }
+        });
         self.save_if_changed();
         egui::CentralPanel::default().show(ctx, |ui| {
             let setter = ParamSetter {
@@ -241,6 +425,18 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_settings();
+    }
+}
+
+/// Label of the file entry in the source list and the combo.
+fn file_label(path: &str) -> String {
+    if path.trim().is_empty() {
+        "Audio file".to_owned()
+    } else {
+        let name = std::path::Path::new(path)
+            .file_name()
+            .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned());
+        format!("Audio file: {name}")
     }
 }
 

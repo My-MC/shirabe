@@ -1,12 +1,16 @@
 //! Audio sources of the standalone application.
 //!
-//! The application measures either an input device or what the computer is playing:
+//! The application measures an input device, what the computer is playing, or a local
+//! audio file played through an output device:
 //!
 //! | Platform | Playing audio is captured with |
 //! |---|---|
 //! | Windows | WASAPI loopback of an output device (cpal) |
 //! | Linux | the monitor source of a PulseAudio / PipeWire sink (`crate::pulse`) |
 //! | macOS 14.2 and later | a Core Audio process tap of all system audio (`crate::tap`) |
+//!
+//! File playback is not a capture path: the decoder feeds both the meters (at the file
+//! rate) and the output device (`crate::player`).
 //!
 //! Streams are opened with the device's own sample rate, channel count and sample format,
 //! and blocks of any size are accepted. When a source delivers no data (a WASAPI loopback
@@ -59,6 +63,11 @@ pub enum Source {
     },
     /// All audio the system plays (macOS 14.2 and later: Core Audio process tap).
     SystemAudio,
+    /// A local WAV or FLAC file played through an output device.
+    File {
+        /// Path of the file.
+        path: String,
+    },
 }
 
 /// An entry of the source list.
@@ -198,19 +207,29 @@ impl Pump {
         }
     }
 
-    fn run(&mut self, n: usize) {
+    fn run(&mut self, n: usize, playing: bool) {
         if self.channels > 1 {
             let mut slices: [&mut [f32]; 2] = [&mut self.left[..n], &mut self.right[..n]];
-            self.engine.process(&mut slices, false);
+            self.engine.process(&mut slices, playing);
         } else {
             let mut slices: [&mut [f32]; 1] = [&mut self.left[..n]];
-            self.engine.process(&mut slices, false);
+            self.engine.process(&mut slices, playing);
         }
     }
 
     /// Measures interleaved data with `stride` channels per frame (the first one or two are
     /// used).
     pub fn interleaved<T>(&mut self, data: &[T], stride: usize)
+    where
+        T: Sample,
+        f32: FromSample<T>,
+    {
+        self.interleaved_with(data, stride, false);
+    }
+
+    /// Like [`Pump::interleaved`], with the transport state given to the engine (file
+    /// playback reports `true` while the file is playing).
+    pub fn interleaved_with<T>(&mut self, data: &[T], stride: usize, playing: bool)
     where
         T: Sample,
         f32: FromSample<T>,
@@ -228,7 +247,7 @@ impl Pump {
                     self.right[i] = f32::from_sample(frame[second]);
                 }
             }
-            self.run(n);
+            self.run(n, playing);
             start += n;
         }
     }
@@ -244,16 +263,17 @@ impl Pump {
                 let src = second.unwrap_or(first);
                 self.right[..n].copy_from_slice(&src[start..start + n]);
             }
-            self.run(n);
+            self.run(n, false);
             start += n;
         }
     }
 
-    fn silence(&mut self, frames: usize) {
+    /// Measures silence, so that the meters fall while nothing is played.
+    pub(crate) fn silence(&mut self, frames: usize, playing: bool) {
         let n = frames.min(MAX_BLOCK);
         self.left[..n].fill(0.0);
         self.right[..n].fill(0.0);
-        self.run(n);
+        self.run(n, playing);
     }
 }
 
@@ -298,7 +318,7 @@ fn feeder(feed: Arc<Feed>, stop: Arc<AtomicBool>) -> Result<JoinHandle<()>> {
                 if feed.stalled() {
                     let mut pump = feed.pump.lock().unwrap_or_else(|e| e.into_inner());
                     let frames = (pump.rate * TICK.as_secs_f32()) as usize;
-                    realtime(|| pump.silence(frames));
+                    realtime(|| pump.silence(frames, false));
                 }
                 next += TICK;
                 let now = Instant::now();
@@ -316,6 +336,8 @@ pub struct Running {
     stream: Option<cpal::Stream>,
     /// Platform capture objects that must live as long as the stream.
     capture: Option<Box<dyn std::any::Any>>,
+    /// File playback, when the source is a file.
+    pub playback: Option<crate::player::Playback>,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
     /// Human-readable stream description.
@@ -348,7 +370,14 @@ pub struct Capture {
 }
 
 /// Starts measuring `source`. The engine is prepared here, outside the audio thread.
-pub fn start(source: &Source, engine: MeterEngine) -> Result<Running> {
+///
+/// `output` is the device used for file playback; when it is `None` the default output
+/// of the current audio API is used.
+pub fn start(
+    source: &Source,
+    engine: MeterEngine,
+    output: Option<&crate::output::DeviceRef>,
+) -> Result<Running> {
     let error = Arc::new(Mutex::new(None));
     let stop = Arc::new(AtomicBool::new(false));
     match source {
@@ -357,6 +386,7 @@ pub fn start(source: &Source, engine: MeterEngine) -> Result<Running> {
             Ok(Running {
                 stream: None,
                 capture: None,
+                playback: None,
                 threads: vec![feeder(feed, stop.clone())?],
                 stop,
                 description: "No input  ·  48.0 kHz (test oscillator only)".to_owned(),
@@ -404,6 +434,7 @@ pub fn start(source: &Source, engine: MeterEngine) -> Result<Running> {
             Ok(Running {
                 stream: Some(stream),
                 capture: None,
+                playback: None,
                 threads: vec![feeder(feed, stop.clone())?],
                 stop,
                 description: format!(
@@ -429,6 +460,7 @@ pub fn start(source: &Source, engine: MeterEngine) -> Result<Running> {
                 Err(anyhow!("sink monitors are only available on Linux"))
             }
         }
+        Source::File { path } => start_file(path, engine, output, error, stop),
         Source::SystemAudio => {
             #[cfg(target_os = "macos")]
             {
@@ -447,6 +479,46 @@ pub fn start(source: &Source, engine: MeterEngine) -> Result<Running> {
     }
 }
 
+/// Starts playing a file through an output device.
+fn start_file(
+    path: &str,
+    engine: MeterEngine,
+    output: Option<&crate::output::DeviceRef>,
+    error: Arc<Mutex<Option<String>>>,
+    stop: Arc<AtomicBool>,
+) -> Result<Running> {
+    if path.trim().is_empty() {
+        return Err(anyhow!("no audio file chosen"));
+    }
+    let (track, decoder) = crate::decode::Decoder::open(path)?;
+    let file_rate = track.rate;
+    let device = match output {
+        Some(device) => device.clone(),
+        None => {
+            let host = cpal::default_host().id().name().to_owned();
+            crate::output::default_device(&host).ok_or_else(|| anyhow!("no output device"))?
+        }
+    };
+    let target = crate::output::Target::new(&device, file_rate)?;
+    let (prepared, consumer) = crate::player::prepare(track, decoder, engine, target.rate)?;
+    let description = format!(
+        "{}  ·  {}",
+        target.device_name,
+        target.description(file_rate)
+    );
+    let stream = target.start(consumer, error.clone())?;
+    let playback = prepared.start(stream, error.clone())?;
+    Ok(Running {
+        stream: None,
+        capture: None,
+        playback: Some(playback),
+        threads: Vec::new(),
+        stop,
+        description,
+        error,
+    })
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn platform_running(
     capture: Capture,
@@ -459,6 +531,7 @@ fn platform_running(
     Ok(Running {
         stream: None,
         capture: Some(capture.keep),
+        playback: None,
         threads,
         stop,
         description: capture.description,
@@ -510,7 +583,7 @@ where
 
 /// Runs audio-thread code. Debug builds abort if it allocates.
 #[inline]
-fn realtime<R>(f: impl FnOnce() -> R) -> R {
+pub(crate) fn realtime<R>(f: impl FnOnce() -> R) -> R {
     #[cfg(debug_assertions)]
     {
         assert_no_alloc::assert_no_alloc(f)

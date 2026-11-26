@@ -18,8 +18,10 @@ anyhow = "1"
 # Same source as nih-plug's `assert_process_allocs` allocator: debug builds abort when the
 # audio callback allocates.
 assert_no_alloc = { git = "https://github.com/robbert-vdh/rust-assert-no-alloc.git", branch = "feature/nested-permit-forbid", features = ["backtrace", "log"] }
+claxon = "0.4"
 cpal = "0.15"
 # Must use the same egui version as nih_plug_egui (the shared editor code).
+hound = "3.5"
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 nih_plug.workspace = true
 serde = { version = "1", features = ["derive"] }

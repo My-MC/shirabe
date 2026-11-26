@@ -85,7 +85,9 @@ GitHub Actions の各実行結果の Artifacts から、プラットフォーム
 | macOS | `~/Library/Application Support/Shirabe/standalone.json` |
 | Linux | `$XDG_CONFIG_HOME/shirabe/standalone.json`（既定は `~/.config/shirabe/`） |
 
-音声ファイルを再生しながらの測定は、[ロードマップ](docs/roadmap.md) のフェーズ 1 で追加します。
+WAV / FLAC を直接測るには、「Source」で `Audio file` を選び、「File」にパスを入力して `Play` を押します。
+ファイルをウィンドウにドラッグ＆ドロップして開くこともできます。
+「Output」で再生先を選べますが、計測は出力用のサンプルレート変換より前に行うため、再生先やスピーカーの音量を変えてもファイルの測定値は変わりません。
 
 ## ドキュメント
 

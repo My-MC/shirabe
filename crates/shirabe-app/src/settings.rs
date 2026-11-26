@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::audio::Source;
+use crate::output::DeviceRef;
 
 /// Version of the settings file layout.
 const VERSION: u32 = 1;
@@ -20,6 +21,9 @@ pub struct Settings {
     pub source: Option<Source>,
     /// Parameter values by ID (see `context::save_params`).
     pub params: BTreeMap<String, f32>,
+    /// Output device used for file playback; `None` uses the default device.
+    #[serde(default)]
+    pub output: Option<DeviceRef>,
 }
 
 #[derive(Serialize, Deserialize)]

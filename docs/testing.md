@@ -206,3 +206,81 @@ ffmpeg -re -f lavfi -i "aevalsrc=0.125893*sin(2*PI*1000*t)|0.0630957*sin(2*PI*10
 
 macOS 版はビルドが通ることだけを CI で確認しています。
 実機での確認は済んでいません。
+
+## スタンドアロンアプリのファイル再生の確認
+
+スタンドアロンアプリで WAV / FLAC ファイルを再生し、メーターと出力の両方を確認します。
+
+### 自動テスト
+
+ファイルのデコード、メーターへの渡し方、サンプルレート変換、リングバッファは `cargo test` で検証します。
+
+```sh
+cargo test -p shirabe-app
+```
+
+| 対象 | 内容 | 許容範囲 |
+|---|---|---|
+| デコード（WAV） | 8 / 16 / 24 / 32 bit PCM、32 bit float、モノラル / ステレオ | サンプル値が一致 |
+| デコード（FLAC） | 16 bit ステレオのテスト音源（`crates/shirabe-app/testdata`） | ピークと RMS が ±0.002 |
+| メーターのレート | 44.1 kHz のファイルを 48 kHz のデバイスで再生 | メーターのレートは 44.1 kHz、ピークは -18.0 / -24.0 dBFS |
+| デバイスのレートの影響 | 同じファイルを 44.1 kHz と 48 kHz で再生 | ピークの差は 0.001 dB 未満 |
+| サンプルレート変換 | 44.1 ↔ 48 kHz、96 → 48 kHz のサイン波 | 通過帯域は ±0.2 dB、折り返しは -57 dB 以下 |
+| リングバッファ | 書き込みと読み出しを別スレッドで実行 | 2 万フレームが順序どおりに届くこと |
+| 出力バッファ（Linux） | 8 / 22.05 / 32 / 44.1 / 48 / 88.2 / 96 / 192 kHz の固定バッファ | 周期の整数倍（4 の倍数）で、50 ms との差が 1 ms 未満 |
+
+### Linux（ALSA のループバック）
+
+`snd-aloop` のループバックで、アプリが実際に出力した音を取り出して確認します。
+`hermes` は `audio` グループに入っていないため、`sg audio -c` で実行します。
+
+次の内容で ALSA の設定ファイルを作り、`default` をループバックにつなぎます。
+
+```sh
+cat > /tmp/shirabe-asoundrc <<'CONF'
+</usr/share/alsa/alsa.conf>
+pcm.!default {
+    type plug
+    slave { pcm "hw:Loopback,0,0" }
+}
+ctl.!default { type hw card Loopback }
+CONF
+```
+
+次のコマンドで、ループバックの取り出し側を 10 秒録音します。
+
+```sh
+sg audio -c 'ALSA_CONFIG_PATH=/tmp/shirabe-asoundrc ffmpeg -f alsa -i hw:Loopback,1,0 -t 10 -ac 2 -ar 44100 capture.wav'
+```
+
+録音を始めたら、アプリを同じ設定で起動します。
+
+```sh
+sg audio -c 'ALSA_CONFIG_PATH=/tmp/shirabe-asoundrc \
+  XDG_CONFIG_HOME=/tmp/shirabe-config ./target/release/shirabe'
+```
+
+「Source」で `Audio file` を選び、`File` にファイルのパスを入れて `Play` を押します。
+2026-11-26 に、次の結果を確認しました。
+
+| 確認したこと | 結果 |
+|---|---|
+| L -18 / R -24 dBFS、1 kHz、44.1 kHz の WAV の再生 | 録音は 4.0 秒、L -18.0 / R -24.0 dBFS、1 kHz。途中の無音なし |
+| 同じ内容の FLAC の再生 | 録音は 4.0 秒、L -18.0 / R -24.0 dBFS |
+| -12 dBFS のモノラルの WAV の再生 | 左右が同じ波形で -12.0 dBFS、画面は「Mono」 |
+| 一時停止と再開 | 2.0 秒再生 → 3.8 秒無音 → 2.0 秒再生 |
+| メーターの表示 | ピーク L -18.0 / R -24.0、VU L +0.0 / R -6.0、Integrated -20.0 LKFS |
+
+確認のときの注意点は次のとおりです。
+
+- 録音は `hw:Loopback,1,0` で行い、アプリの出力は `default`（ループバックの再生側）にします。
+- 録音とアプリは同じサンプルレートで開きます。
+- ALSA の `plug` がレートを変換するため、この構成ではアプリ自身のサンプルレート変換は動きません。
+  変換の確認は自動テストで行います。
+- デバッグビルドは最適化されていないため、実時間で再生できず、音が途切れます。
+  音の確認には `--release` を使ってください。デバッグビルドは、メモリ確保の検出（`assert_no_alloc`）に使います。
+
+### Windows と macOS
+
+ファイル再生の Windows / macOS での確認はまだ行っていません。
+WASAPI と Core Audio では、デバイスがファイルのレートを受け付けない場合にアプリ側で変換します。
