@@ -124,6 +124,24 @@ pub fn draw(
     oscillator_controls(ui, params, setter, theme);
 }
 
+fn correlation_text(value: Option<f32>) -> String {
+    match value {
+        Some(v) if v.abs() < 0.005 => "0.00".into(),
+        Some(v) => format!("{v:+.2}"),
+        None => "--".into(),
+    }
+}
+
+fn balance_text(value: Option<f32>) -> String {
+    match value.map(shirabe_dsp::stereo::balance_to_db) {
+        Some(d) if d == f32::NEG_INFINITY => "L only".into(),
+        Some(d) if d == f32::INFINITY => "R only".into(),
+        Some(d) if d.abs() < 0.05 => "0.0 dB".into(),
+        Some(d) => format!("{} {:.1} dB", if d < 0.0 { "L" } else { "R" }, d.abs()),
+        None => "--".into(),
+    }
+}
+
 fn header(ui: &mut egui::Ui, shared: &SharedMeters, theme: &Theme) {
     ui.horizontal(|ui| {
         ui.label(
@@ -144,6 +162,25 @@ fn header(ui: &mut egui::Ui, shared: &SharedMeters, theme: &Theme) {
             "-".to_owned()
         };
         ui.label(RichText::new(format!("{layout}  ·  {rate}")).color(theme.text_dim));
+        ui.separator();
+        ui.label(
+            RichText::new(format!(
+                "Corr {}",
+                correlation_text(shared.stereo.correlation.load())
+            ))
+            .monospace()
+            .color(theme.text),
+        )
+        .on_hover_text("Stereo correlation over 400 ms: −1 opposite phase, +1 in phase");
+        ui.label(
+            RichText::new(format!(
+                "Bal {}",
+                balance_text(shared.stereo.balance.load())
+            ))
+            .monospace()
+            .color(theme.text),
+        )
+        .on_hover_text("Left/right energy difference over 400 ms; shows the louder side");
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui
@@ -1336,6 +1373,20 @@ mod tests {
         ] {
             assert!((bbc_mark(db) - mark).abs() < 1e-6, "{db}");
         }
+    }
+
+    #[test]
+    fn stereo_header_labels_distinguish_silence_center_and_one_sided_audio() {
+        assert_eq!(correlation_text(None), "--");
+        assert_eq!(correlation_text(Some(-1.0)), "-1.00");
+        assert_eq!(correlation_text(Some(0.0)), "0.00");
+        assert_eq!(correlation_text(Some(1.0)), "+1.00");
+        assert_eq!(balance_text(None), "--");
+        assert_eq!(balance_text(Some(0.0)), "0.0 dB");
+        assert_eq!(balance_text(Some(-0.6)), "L 6.0 dB");
+        assert_eq!(balance_text(Some(0.6)), "R 6.0 dB");
+        assert_eq!(balance_text(Some(-1.0)), "L only");
+        assert_eq!(balance_text(Some(1.0)), "R only");
     }
 
     fn column(height: f32) -> Rect {

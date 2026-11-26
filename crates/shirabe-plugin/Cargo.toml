@@ -20,3 +20,9 @@ nih_plug = { workspace = true, features = ["assert_process_allocs"] }
 nih_plug_egui.workspace = true
 shirabe-dsp.workspace = true
 shirabe-ui.workspace = true
+
+[dev-dependencies]
+# The same crate and revision nih-plug uses for `assert_process_allocs`; it lets the tests run
+# the measurement path under the allocation guard of the debug plugin build. The global
+# allocator itself is installed by nih-plug, so no second one is declared here.
+assert_no_alloc = { git = "https://github.com/robbert-vdh/rust-assert-no-alloc.git", branch = "feature/nested-permit-forbid", features = ["backtrace", "log"] }

@@ -2956,6 +2956,7 @@ dependencies = [
 name = "shirabe-plugin"
 version = "0.1.0"
 dependencies = [
+ "assert_no_alloc",
  "nih_plug",
  "nih_plug_egui",
  "shirabe-dsp",

@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use nih_plug::prelude::AtomicF32;
 use shirabe_dsp::scope::StereoScope;
+use shirabe_dsp::stereo::StereoStatsReadout;
 use shirabe_dsp::{ChannelLayout, LoudnessReadout, PeakMeter, MINUS_INFINITY_DB};
 
 /// Maximum number of channels the meters are pre-allocated for.
@@ -124,11 +125,41 @@ impl LoudnessShared {
     }
 }
 
+/// Stereo correlation and L/R balance read-outs.
+pub struct StereoShared {
+    /// Correlation of the measurement window: `+1` in phase, `0` unrelated, `-1` anti-phase.
+    pub correlation: OptionalF32,
+    /// Relative channel energy: `-1` left only, `0` equal, `+1` right only.
+    pub balance: OptionalF32,
+}
+
+impl StereoShared {
+    fn new() -> Self {
+        Self {
+            correlation: OptionalF32::new(),
+            balance: OptionalF32::new(),
+        }
+    }
+
+    /// Publishes the stereo statistics (audio thread).
+    pub fn store(&self, r: &StereoStatsReadout) {
+        self.correlation.store(r.correlation.map(f64::from));
+        self.balance.store(r.balance.map(f64::from));
+    }
+
+    fn clear(&self) {
+        self.correlation.store(None);
+        self.balance.store(None);
+    }
+}
+
 /// Everything the editor can read.
 pub struct SharedMeters {
     channels: [ChannelReadout; MAX_CHANNELS],
     /// Programme loudness of all channels.
     pub loudness: LoudnessShared,
+    /// Correlation and balance of the stereo input (audio thread writes, editor reads).
+    pub stereo: StereoShared,
     /// Recent stereo frames for the Lissajous view (audio thread writes, editor reads).
     /// Empty while the input is mono.
     pub scope: StereoScope,
@@ -149,6 +180,7 @@ impl SharedMeters {
         Self {
             channels: std::array::from_fn(|_| ChannelReadout::new()),
             loudness: LoudnessShared::new(),
+            stereo: StereoShared::new(),
             scope: StereoScope::new(),
             active_channels: AtomicUsize::new(2),
             sample_rate: AtomicF32::new(0.0),
@@ -174,6 +206,7 @@ impl SharedMeters {
         }
         self.loudness.store(&LoudnessReadout::default());
         self.loudness.plr.store(None);
+        self.stereo.clear();
         self.scope.clear();
     }
 
