@@ -1,14 +1,61 @@
-//! Lissajous (mid/side) display of the stereo signal.
+//! Selectable mid/side (Lissajous) and left/right (vectorscope) display of the stereo signal.
 //!
-//! The widget only draws: it takes points already rotated to mid/side coordinates and never
+//! The widget only draws: it takes points already projected into the selected plane and never
 //! touches audio state. See `shirabe_dsp::scope` for the capture buffer and the rotation.
 
 use std::collections::VecDeque;
+
+use shirabe_dsp::scope::mid_side;
 
 use crate::egui::{
     pos2, vec2, Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind,
 };
 use crate::theme::Theme;
+
+/// Which pair of stereo coordinates the scope plots.
+///
+/// Both planes show the same captured frames; neither is a new measurement. The mid/side
+/// plane is the L/R pair rotated by 45°, the left/right plane is the native vectorscope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScopePlane {
+    /// Vertical mid, horizontal side (the Lissajous figure).
+    MidSide,
+    /// Horizontal left, vertical right (the vectorscope).
+    LeftRight,
+}
+
+impl ScopePlane {
+    /// Screen coordinates `(x, y)` of one stereo frame: `x` grows to the right, `y` upwards.
+    ///
+    /// Signs are not flipped here; [`ScopeGeometry::point`] turns them into screen positions.
+    pub fn project(self, left: f32, right: f32) -> (f32, f32) {
+        match self {
+            Self::MidSide => {
+                let (mid, side) = mid_side(left, right);
+                (side, mid)
+            }
+            Self::LeftRight => (left, right),
+        }
+    }
+
+    /// Heading shown above the figure.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::MidSide => "LISSAJOUS  M/S",
+            Self::LeftRight => "VECTORSCOPE  L/R",
+        }
+    }
+
+    /// Physical labels of the (horizontal, vertical) axes, if the view prints them.
+    ///
+    /// The mid/side plane is a rotated view without physical channels, so it stays unlabelled.
+    pub fn axis_labels(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::MidSide => None,
+            Self::LeftRight => Some(("L", "R")),
+        }
+    }
+}
 
 /// Points read from the capture buffer for one displayed frame. The oldest frames of the
 /// capture are dropped, so the nicest figures come from signals that are periodic within
@@ -50,9 +97,9 @@ const TITLE_HEIGHT: f32 = 14.0;
 /// One point of the fading trail, already scaled by the gain in use when it was captured.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TimedPoint {
-    /// Mid/side coordinates after the display gain.
-    pub mid: f32,
-    pub side: f32,
+    /// Plane coordinates after the display gain: horizontal first, vertical second.
+    pub x: f32,
+    pub y: f32,
     /// Seconds on the editor clock (monotonic within one editor session).
     pub time: f64,
 }
@@ -80,11 +127,11 @@ impl Trail {
     }
 
     /// Appends one point, dropping the oldest point when the capacity is reached.
-    pub fn push(&mut self, mid: f32, side: f32, time: f64) {
+    pub fn push(&mut self, x: f32, y: f32, time: f64) {
         if self.points.len() == TRAIL_CAPACITY {
             self.points.pop_front();
         }
-        self.points.push_back(TimedPoint { mid, side, time });
+        self.points.push_back(TimedPoint { x, y, time });
     }
 
     /// Removes points older than `seconds` at time `now`.
@@ -138,7 +185,7 @@ pub fn alpha_at(age: f32, seconds: f32) -> f32 {
     (1.0 - t).powf(1.3) * 0.85
 }
 
-/// Text for the right side of the Lissajous title: the scale actually applied.
+/// Text for the right side of the scope title: the scale actually applied.
 pub fn scale_label(auto: bool, gain_db: f32, holding: bool, clipped: bool) -> String {
     let gain = {
         let rounded = (gain_db * 10.0).round() / 10.0;
@@ -157,7 +204,7 @@ pub fn scale_label(auto: bool, gain_db: f32, holding: bool, clipped: bool) -> St
     }
 }
 
-/// Automatic display gain for the Lissajous view.
+/// Automatic display gain for the scope view.
 ///
 /// The gain only ever boosts (0 to [`MAX_GAIN_DB`]) and follows a peak envelope with a slow
 /// release and a faster attack. Below [`GAIN_FLOOR_DBFS`] it holds the last value instead of
@@ -199,7 +246,7 @@ impl AutoGain {
         10.0f32.powf(self.gain_db / 20.0)
     }
 
-    /// Feeds mid/side points captured during `dt` seconds.
+    /// Feeds plane points captured during `dt` seconds.
     pub fn update(&mut self, points: &[(f32, f32)], dt: f32) {
         if !dt.is_finite() || dt <= 0.0 {
             return;
@@ -208,8 +255,8 @@ impl AutoGain {
         let decay = (-dt / PEAK_RELEASE_SECONDS).exp();
         let block_peak = points
             .iter()
-            .filter(|(mid, side)| mid.is_finite() && side.is_finite())
-            .map(|(mid, side)| mid.abs().max(side.abs()))
+            .filter(|(x, y)| x.is_finite() && y.is_finite())
+            .map(|(x, y)| x.abs().max(y.abs()))
             .fold(0.0f32, f32::max);
 
         let floor = 10.0f32.powf(GAIN_FLOOR_DBFS / 20.0);
@@ -246,11 +293,11 @@ impl Default for AutoGain {
     }
 }
 
-/// Maps mid/side coordinates onto a centred square.
+/// Maps plane coordinates onto a centred square.
 ///
-/// `mid` is the vertical axis (L + R, positive up) and `side` the horizontal axis
-/// (L − R, positive right). Values outside ±1 are drawn on the border; use
-/// [`is_clipped`] to flag them.
+/// `x` is the horizontal axis (positive right) and `y` the vertical axis (positive up).
+/// The plane decides which signal pair those axes carry (see [`ScopePlane`]). Values
+/// outside ±1 are drawn on the border; use [`is_clipped`] to flag them.
 #[derive(Clone, Copy, Debug)]
 pub struct ScopeGeometry {
     square: Rect,
@@ -270,14 +317,14 @@ impl ScopeGeometry {
         self.square
     }
 
-    /// Position of a mid/side pair. Full scale (±1) lies on the border of the square.
-    pub fn point(&self, mid: f32, side: f32) -> Pos2 {
+    /// Position of a plane coordinate. Full scale (±1) lies on the border of the square.
+    pub fn point(&self, x: f32, y: f32) -> Pos2 {
         let half = self.square.width() * 0.5;
-        let mid = unit(mid);
-        let side = unit(side);
+        let x = unit(x);
+        let y = unit(y);
         pos2(
-            self.square.center().x + side * half,
-            self.square.center().y - mid * half,
+            self.square.center().x + x * half,
+            self.square.center().y - y * half,
         )
     }
 }
@@ -291,17 +338,19 @@ fn unit(value: f32) -> f32 {
     }
 }
 
-/// Whether any point lies beyond full scale (0 dBFS on either axis).
+/// Whether any point lies beyond full scale (0 dBFS on either plane axis).
 pub fn is_clipped(points: &[(f32, f32)]) -> bool {
-    points.iter().any(|&(mid, side)| {
-        (mid.is_finite() && mid.abs() > 1.0) || (side.is_finite() && side.abs() > 1.0)
-    })
+    points
+        .iter()
+        .any(|&(x, y)| (x.is_finite() && x.abs() > 1.0) || (y.is_finite() && y.abs() > 1.0))
 }
 
-/// Everything the Lissajous panel draws in one frame.
+/// Everything the scope panel draws in one frame.
 pub struct ScopeRender<'a> {
-    /// Newest points, already scaled by the display gain.
+    /// Newest points in plane coordinates, already scaled by the display gain.
     pub points: &'a [(f32, f32)],
+    /// Plane the points use: it selects the heading and the axis labels.
+    pub plane: ScopePlane,
     /// Fading history when the trail is on; `None` draws only `points`.
     pub trail: Option<&'a Trail>,
     /// Editor clock in seconds, used to age the trail.
@@ -317,16 +366,16 @@ pub struct ScopeRender<'a> {
     /// Mono input: no figure is drawn because a duplicated channel would suggest perfect
     /// correlation.
     pub mono: bool,
-    /// True when the unscaled signal exceeded the fixed M/S range.
+    /// True when the unscaled signal exceeded the fixed range of the selected plane.
     pub clipped: bool,
 }
 
-/// Draws the Lissajous panel in `rect`.
+/// Draws the scope panel in `rect`.
 pub fn draw(painter: &Painter, rect: Rect, view: &ScopeRender<'_>, theme: &Theme) {
     painter.text(
         pos2(rect.left(), rect.top()),
         Align2::LEFT_TOP,
-        "LISSAJOUS  M/S",
+        view.plane.title(),
         FontId::proportional(11.0),
         theme.text_dim,
     );
@@ -363,6 +412,24 @@ pub fn draw(painter: &Painter, rect: Rect, view: &ScopeRender<'_>, theme: &Theme
         Stroke::new(1.0_f32, border),
         StrokeKind::Inside,
     );
+
+    // The vectorscope names its physical channels; the rotated mid/side view has none.
+    if let Some((horizontal, vertical)) = view.plane.axis_labels() {
+        painter.text(
+            pos2(square.right() - 4.0, centre.y + 3.0),
+            Align2::RIGHT_TOP,
+            horizontal,
+            FontId::proportional(9.0),
+            grid,
+        );
+        painter.text(
+            pos2(centre.x + 4.0, square.top() + 3.0),
+            Align2::LEFT_TOP,
+            vertical,
+            FontId::proportional(9.0),
+            grid,
+        );
+    }
 
     // The right end of the title states the scale actually applied, or the clip state.
     if !view.mono {
@@ -416,8 +483,8 @@ pub fn draw(painter: &Painter, rect: Rect, view: &ScopeRender<'_>, theme: &Theme
     let visible: Vec<Pos2> = view
         .points
         .iter()
-        .filter(|(mid, side)| mid.is_finite() && side.is_finite())
-        .map(|&(mid, side)| geometry.point(mid, side))
+        .filter(|(x, y)| x.is_finite() && y.is_finite())
+        .map(|&(x, y)| geometry.point(x, y))
         .collect();
     match visible.as_slice() {
         [] => {}
@@ -473,7 +540,7 @@ fn draw_trail(
         chunk.clear();
     };
     for point in trail.iter() {
-        if !point.mid.is_finite() || !point.side.is_finite() {
+        if !point.x.is_finite() || !point.y.is_finite() {
             continue;
         }
         let age = (now - point.time) as f32;
@@ -487,7 +554,7 @@ fn draw_trail(
             flush(&mut chunk, layer);
             layer = this_layer;
         }
-        chunk.push(geometry.point(point.mid, point.side));
+        chunk.push(geometry.point(point.x, point.y));
     }
     flush(&mut chunk, layer);
 }

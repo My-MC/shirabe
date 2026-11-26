@@ -1,4 +1,4 @@
-//! Geometry of the Lissajous display: mid/side coordinates mapped onto a square.
+//! Geometry of the scope display: plane coordinates mapped onto a square.
 
 use shirabe_ui::egui::{pos2, vec2, Rect};
 use shirabe_ui::scope::{is_clipped, ScopeGeometry};
@@ -8,18 +8,18 @@ fn square(x: f32, y: f32, w: f32, h: f32) -> Rect {
 }
 
 #[test]
-fn the_centre_of_the_square_is_zero_mid_and_zero_side() {
+fn the_centre_of_the_square_is_the_origin() {
     let geometry = ScopeGeometry::new(square(0.0, 0.0, 100.0, 100.0));
     assert_eq!(geometry.point(0.0, 0.0), pos2(50.0, 50.0));
 }
 
 #[test]
-fn mid_is_up_and_side_is_right() {
+fn the_vertical_axis_is_up_and_the_horizontal_axis_is_right() {
     let geometry = ScopeGeometry::new(square(0.0, 0.0, 100.0, 100.0));
-    assert_eq!(geometry.point(1.0, 0.0), pos2(50.0, 0.0));
-    assert_eq!(geometry.point(-1.0, 0.0), pos2(50.0, 100.0));
-    assert_eq!(geometry.point(0.0, 1.0), pos2(100.0, 50.0));
-    assert_eq!(geometry.point(0.0, -1.0), pos2(0.0, 50.0));
+    assert_eq!(geometry.point(0.0, 1.0), pos2(50.0, 0.0));
+    assert_eq!(geometry.point(0.0, -1.0), pos2(50.0, 100.0));
+    assert_eq!(geometry.point(1.0, 0.0), pos2(100.0, 50.0));
+    assert_eq!(geometry.point(-1.0, 0.0), pos2(0.0, 50.0));
 }
 
 #[test]
@@ -36,8 +36,8 @@ fn the_square_is_centred_in_a_wide_rectangle() {
 #[test]
 fn values_beyond_full_scale_are_drawn_on_the_border() {
     let geometry = ScopeGeometry::new(square(0.0, 0.0, 100.0, 100.0));
-    assert_eq!(geometry.point(2.0, 0.0), pos2(50.0, 0.0));
-    assert_eq!(geometry.point(0.0, -3.0), pos2(0.0, 50.0));
+    assert_eq!(geometry.point(0.0, 2.0), pos2(50.0, 0.0));
+    assert_eq!(geometry.point(-3.0, 0.0), pos2(0.0, 50.0));
 }
 
 #[test]

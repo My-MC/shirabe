@@ -12,3 +12,5 @@ publish = false
 [dependencies]
 # Only used for its `egui` re-export, so the widget crate always matches the editor's egui version.
 nih_plug_egui.workspace = true
+# Coordinate transforms of the captured stereo frames (the capture ring itself is in dsp).
+shirabe-dsp.workspace = true

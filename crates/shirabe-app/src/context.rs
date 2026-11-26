@@ -86,17 +86,23 @@ mod tests {
     fn scope_display_settings_keep_their_ids_and_survive_a_roundtrip() {
         let params = ShirabeParams::default();
         let saved = save_params(&params);
-        // The trail is on and the fixed scale is the default.
+        // The trail is on, the fixed scale is the default, and the Lissajous plane is selected.
         assert_eq!(saved.get("scp_trail"), Some(&1.0));
         assert_eq!(saved.get("scp_auto"), Some(&0.0));
+        assert_eq!(saved.get("scp_lr"), Some(&0.0));
 
         load_params(
             &params,
-            &BTreeMap::from([("scp_trail".to_owned(), 0.0), ("scp_auto".to_owned(), 1.0)]),
+            &BTreeMap::from([
+                ("scp_trail".to_owned(), 0.0),
+                ("scp_auto".to_owned(), 1.0),
+                ("scp_lr".to_owned(), 1.0),
+            ]),
         );
         let restored = ShirabeParams::default();
         load_params(&restored, &save_params(&params));
         assert_eq!(save_params(&restored).get("scp_trail"), Some(&0.0));
         assert_eq!(save_params(&restored).get("scp_auto"), Some(&1.0));
+        assert_eq!(save_params(&restored).get("scp_lr"), Some(&1.0));
     }
 }

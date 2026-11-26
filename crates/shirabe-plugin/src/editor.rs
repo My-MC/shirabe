@@ -11,15 +11,14 @@ use std::sync::Arc;
 
 use nih_plug::prelude::*;
 use nih_plug_egui::{create_egui_editor, resizable_window::ResizableWindow, widgets};
-use shirabe_dsp::scope::mid_side;
 use shirabe_dsp::MINUS_INFINITY_DB;
 use shirabe_ui::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Painter, Rect, RichText, Sense,
     Stroke,
 };
 use shirabe_ui::scope::{
-    draw as draw_scope, is_clipped, AutoGain, ScopeRender, Trail, MAX_POINTS, TRAIL_CAPACITY,
-    TRAIL_SECONDS,
+    draw as draw_scope, is_clipped, AutoGain, ScopePlane, ScopeRender, Trail, MAX_POINTS,
+    TRAIL_CAPACITY, TRAIL_SECONDS,
 };
 use shirabe_ui::{
     draw_level_bar, draw_marker, draw_scale_labels, format_db, format_lufs, MeterScale, Theme, Zone,
@@ -416,12 +415,18 @@ fn scope_section(
 ) {
     let trail_on = params.scope_trail.value();
     let auto = params.scope_auto_gain.value();
+    let plane = if params.scope_view_lr.value() {
+        ScopePlane::LeftRight
+    } else {
+        ScopePlane::MidSide
+    };
     let channels = shared
         .active_channels()
         .clamp(1, crate::shared::MAX_CHANNELS);
-    view.update(shared, channels, now, trail_on, auto);
+    view.update(shared, channels, now, trail_on, auto, plane);
     let render = ScopeRender {
         points: view.points(),
+        plane,
         trail: trail_on.then_some(view.trail()),
         now,
         trail_seconds: TRAIL_SECONDS,
@@ -434,8 +439,8 @@ fn scope_section(
     draw_scope(painter, rect, &render, theme);
 }
 
-/// Display-only state of the Lissajous view: the trail, the automatic gain and the read
-/// cursor into the capture ring.
+/// Display-only state of the scope view: the trail, the automatic gain and the read cursor
+/// into the capture ring.
 ///
 /// The measured path never sees this state. Only frames the editor has not read before are
 /// appended to the trail, so a paused host does not stack copies of the same trace, and the
@@ -446,11 +451,12 @@ pub struct ScopeView {
     last_time: f64,
     last_trail: Option<bool>,
     last_auto: Option<bool>,
+    last_plane: Option<ScopePlane>,
     trail: Trail,
     gain: AutoGain,
     /// Raw L/R frames read from the capture ring.
     raw: Vec<(f32, f32)>,
-    /// New mid/side points after the display gain, for this frame.
+    /// New plane points after the display gain, for this frame.
     fresh: Vec<(f32, f32)>,
     /// Newest trace after display gain, retained while no fresh samples arrive.
     latest: Vec<(f32, f32)>,
@@ -471,6 +477,7 @@ impl ScopeView {
             last_time: f64::NAN,
             last_trail: None,
             last_auto: None,
+            last_plane: None,
             trail: Trail::new(),
             gain: AutoGain::new(),
             raw: vec![(0.0, 0.0); TRAIL_CAPACITY],
@@ -488,7 +495,8 @@ impl ScopeView {
     /// Consumes the frames written since the previous update.
     ///
     /// `now` is the editor clock in seconds. `trail_on` and `auto` mirror the two display
-    /// settings; a change of either starts the history and the gain afresh.
+    /// settings, and `plane` selects the plotted axes; a change of any of them starts the
+    /// history and the gain afresh.
     pub fn update(
         &mut self,
         shared: &SharedMeters,
@@ -496,6 +504,7 @@ impl ScopeView {
         now: f64,
         trail_on: bool,
         auto: bool,
+        plane: ScopePlane,
     ) {
         if !now.is_finite() {
             return;
@@ -517,7 +526,10 @@ impl ScopeView {
         };
 
         let epoch = shared.scope.epoch();
-        if epoch != self.epoch || self.last_trail != Some(trail_on) || self.last_auto != Some(auto)
+        if epoch != self.epoch
+            || self.last_trail != Some(trail_on)
+            || self.last_auto != Some(auto)
+            || self.last_plane != Some(plane)
         {
             restart = true;
         }
@@ -529,6 +541,7 @@ impl ScopeView {
             self.epoch = epoch;
             self.last_trail = Some(trail_on);
             self.last_auto = Some(auto);
+            self.last_plane = Some(plane);
             // A reset restarts the capture counter at zero, so read from its beginning.
             self.cursor = 0;
         }
@@ -558,7 +571,7 @@ impl ScopeView {
         self.cursor = cursor;
         self.new_samples = count;
         for (index, &(left, right)) in self.raw[..count].iter().enumerate() {
-            self.fresh[index] = mid_side(left, right);
+            self.fresh[index] = plane.project(left, right);
         }
         if count > 0 && trail_on {
             self.clipped = is_clipped(&self.fresh[..count]);
@@ -584,17 +597,17 @@ impl ScopeView {
                 self.latest_len = count - start;
                 self.latest[..self.latest_len].copy_from_slice(&self.fresh[start..count]);
             }
-            for &(mid, side) in &self.fresh[..count] {
-                self.trail.push(mid, side, now);
+            for &(x, y) in &self.fresh[..count] {
+                self.trail.push(x, y, now);
             }
             self.trail.prune(now, TRAIL_SECONDS);
         } else {
             let count = shared.scope.read_latest(&mut self.raw[..MAX_POINTS]);
             self.clipped = false;
             for (index, &(left, right)) in self.raw[..count].iter().enumerate() {
-                let (mid, side) = mid_side(left, right);
-                self.clipped |= is_clipped(&[(mid, side)]);
-                self.latest[index] = (mid * factor, side * factor);
+                let (x, y) = plane.project(left, right);
+                self.clipped |= is_clipped(&[(x, y)]);
+                self.latest[index] = (x * factor, y * factor);
             }
             self.latest_len = count;
         }
@@ -605,7 +618,7 @@ impl ScopeView {
         &self.latest[..self.latest_len]
     }
 
-    /// Whether unscaled mid/side samples exceeded full scale.
+    /// Whether unscaled samples exceeded full scale on either axis of the selected plane.
     pub fn clipped(&self) -> bool {
         self.clipped
     }
@@ -1268,7 +1281,17 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
             ui.add(widgets::ParamSlider::for_param(&params.vu_reference, setter).with_width(110.0));
         }
         ui.separator();
-        ui.label("Scope");
+        // The view switch replaces a "Scope" caption so the group still fits at 640 px.
+        let mut left_right = params.scope_view_lr.value();
+        if ui
+            .checkbox(&mut left_right, "L/R")
+            .on_hover_text("Plot left on the horizontal and right on the vertical axis")
+            .changed()
+        {
+            setter.begin_set_parameter(&params.scope_view_lr);
+            setter.set_parameter(&params.scope_view_lr, left_right);
+            setter.end_set_parameter(&params.scope_view_lr);
+        }
         let mut trail = params.scope_trail.value();
         if ui
             .checkbox(&mut trail, "Trail")
@@ -1281,7 +1304,7 @@ fn settings(ui: &mut egui::Ui, params: &ShirabeParams, setter: &ParamSetter) {
         }
         let mut auto = params.scope_auto_gain.value();
         if ui
-            .checkbox(&mut auto, "Auto gain")
+            .checkbox(&mut auto, "Auto")
             .on_hover_text(
                 "Fit the figure to the signal (up to +20 dB) instead of the fixed ±1 scale",
             )

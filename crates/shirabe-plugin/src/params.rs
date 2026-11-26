@@ -222,6 +222,11 @@ pub struct ShirabeParams {
     /// Fit the Lissajous figure to the signal instead of using the fixed ±1 scale.
     #[id = "scp_auto"]
     pub scope_auto_gain: BoolParam,
+
+    /// Plot left on the horizontal and right on the vertical axis (vectorscope) instead of
+    /// the rotated mid/side Lissajous figure. Display-only, so it is not automatable.
+    #[id = "scp_lr"]
+    pub scope_view_lr: BoolParam,
 }
 
 impl Default for ShirabeParams {
@@ -329,6 +334,8 @@ impl Default for ShirabeParams {
             scope_trail: BoolParam::new("Lissajous Trail", true).non_automatable(),
 
             scope_auto_gain: BoolParam::new("Lissajous Auto Gain", false).non_automatable(),
+
+            scope_view_lr: BoolParam::new("Scope L/R View", false).non_automatable(),
         }
     }
 }
@@ -381,5 +388,22 @@ mod tests {
         for text in ["none", "±0.5 LU", "1.5"] {
             assert!(p.string_to_normalized_value(text).is_some(), "{text}");
         }
+    }
+
+    #[test]
+    fn the_vectorscope_switch_is_opt_in_non_automatable_and_appended_last() {
+        let params = ShirabeParams::default();
+        assert!(!params.scope_view_lr.value());
+        assert!(params
+            .scope_view_lr
+            .flags()
+            .contains(ParamFlags::NON_AUTOMATABLE));
+        let ids: Vec<String> = params
+            .param_map()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        // Appending keeps every host automation index already in use unchanged.
+        assert_eq!(ids.last().map(String::as_str), Some("scp_lr"));
     }
 }
