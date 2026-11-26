@@ -306,13 +306,14 @@ fn header(
         // The comparison needs a host sidechain input, so the standalone application, which
         // has none, does not offer it.
         let presets = layout_presets(sidechain_supported);
-        combo(
+        combo_showing(
             ui,
             "layout-preset",
             &params.layout_preset,
             setter,
             presets,
             |preset| layout_preset_name(text, preset),
+            shown_layout(params.layout_preset.value(), sidechain_supported),
         );
 
         language_menu(ui, params, setter, text, japanese_attempted);
@@ -1606,7 +1607,20 @@ fn combo<E: Enum + PartialEq + Copy + 'static>(
     options: &[E],
     name: impl Fn(E) -> &'static str,
 ) {
-    let current = param.value();
+    combo_showing(ui, id, param, setter, options, name, param.value());
+}
+
+/// Like [`combo`], but labelled with `current`, which may differ from the stored value when
+/// the stored choice is not available on this target.
+fn combo_showing<E: Enum + PartialEq + Copy + 'static>(
+    ui: &mut egui::Ui,
+    id: &str,
+    param: &EnumParam<E>,
+    setter: &ParamSetter,
+    options: &[E],
+    name: impl Fn(E) -> &'static str,
+    current: E,
+) {
     egui::ComboBox::from_id_salt(id)
         .selected_text(name(current))
         .show_ui(ui, |ui| {
@@ -1808,6 +1822,16 @@ fn layout_presets(sidechain_supported: bool) -> &'static [LayoutPreset] {
     }
 }
 
+/// The preset named in the Layout menu: a stored `Compare` that falls back to `Standard`
+/// is labelled `Standard`, matching what is drawn.
+fn shown_layout(preset: LayoutPreset, sidechain_supported: bool) -> LayoutPreset {
+    if preset == LayoutPreset::Compare && !sidechain_supported {
+        LayoutPreset::Standard
+    } else {
+        preset
+    }
+}
+
 /// The geometry to draw for `preset` on this target. A stored `Compare` falls back to
 /// `Standard` where the comparison cannot work, so the meters stay visible.
 fn geometry_for(
@@ -1887,6 +1911,23 @@ fn short_number(v: f32) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_stored_compare_layout_is_labelled_as_the_layout_drawn_without_a_sidechain() {
+        assert_eq!(
+            shown_layout(LayoutPreset::Compare, false),
+            LayoutPreset::Standard
+        );
+        assert_eq!(
+            shown_layout(LayoutPreset::Compare, true),
+            LayoutPreset::Compare
+        );
+        assert_eq!(
+            shown_layout(LayoutPreset::History, false),
+            LayoutPreset::History
+        );
+    }
+
     use super::*;
 
     #[test]
