@@ -15,6 +15,8 @@
 //! Streams are opened with the device's own sample rate, channel count and sample format,
 //! and blocks of any size are accepted. When a source delivers no data (a WASAPI loopback
 //! stream is silent while nothing plays), silence is fed instead so the meters fall back.
+//! The wait starts when the audio already received has been played out, so a source that
+//! delivers in large bursts is not mistaken for a stopped one.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -31,7 +33,7 @@ use shirabe_plugin::engine::MeterEngine;
 const MAX_BLOCK: usize = 4096;
 /// Sample rate used when no device is selected.
 const IDLE_SAMPLE_RATE: f32 = 48_000.0;
-/// Silence is fed when the source has delivered nothing for this long.
+/// Silence is fed when the audio received from the source has run out for this long.
 const STALL: Duration = Duration::from_millis(100);
 /// Period of the silence feeder.
 const TICK: Duration = Duration::from_millis(10);
@@ -189,6 +191,8 @@ pub struct Pump {
     channels: usize,
     /// Sample rate of the source.
     rate: f32,
+    /// Frames measured from the source (silence fed by the application is not counted).
+    delivered: u64,
 }
 
 impl Pump {
@@ -204,6 +208,7 @@ impl Pump {
             right: vec![0.0; MAX_BLOCK],
             channels,
             rate,
+            delivered: 0,
         }
     }
 
@@ -238,6 +243,7 @@ impl Pump {
         let stride = stride.max(1);
         let second = usize::from(stride > 1);
         let frames = data.len() / stride;
+        self.delivered += frames as u64;
         let mut start = 0;
         while start < frames {
             let n = (frames - start).min(MAX_BLOCK);
@@ -256,6 +262,7 @@ impl Pump {
     /// Measures planar data (one slice per channel, all of the same length).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn planar(&mut self, first: &[f32], second: Option<&[f32]>) {
+        self.delivered += first.len() as u64;
         let mut start = 0;
         while start < first.len() {
             let n = (first.len() - start).min(MAX_BLOCK);
@@ -282,8 +289,14 @@ impl Pump {
 pub struct Feed {
     pump: Mutex<Pump>,
     origin: Instant,
-    /// Time of the last data from the source, in microseconds since `origin`.
-    last: AtomicU64,
+    /// Time, in microseconds since `origin`, at which the audio received so far has been
+    /// played out.
+    ///
+    /// PipeWire under load moves audio in quanta of up to 8192 frames (171 ms at 48 kHz),
+    /// and a reader asking for 10 ms gets them as a burst of short reads followed by a long
+    /// gap. Counting from the last read fed silence in that gap, which pushed the meters
+    /// down until the next burst and looked like a freeze.
+    covered: AtomicU64,
 }
 
 impl Feed {
@@ -291,21 +304,37 @@ impl Feed {
         Arc::new(Self {
             pump: Mutex::new(pump),
             origin: Instant::now(),
-            last: AtomicU64::new(0),
+            covered: AtomicU64::new(0),
         })
     }
 
     /// Runs `f` on the pump from a source callback. Debug builds abort if it allocates.
     pub fn with<R>(&self, f: impl FnOnce(&mut Pump) -> R) -> R {
-        self.last
-            .store(self.origin.elapsed().as_micros() as u64, Ordering::Relaxed);
+        let now = self.origin.elapsed();
         let mut pump = self.pump.lock().unwrap_or_else(|e| e.into_inner());
-        realtime(|| f(&mut pump))
+        let before = pump.delivered;
+        let result = realtime(|| f(&mut pump));
+        let frames = pump.delivered - before;
+        let audio = Duration::from_secs_f64(frames as f64 / f64::from(pump.rate.max(1.0)));
+        // Audio arriving after the previous data ran out starts a new span at `now`.
+        let start = now.max(self.covered_until());
+        self.covered
+            .store((start + audio).as_micros() as u64, Ordering::Relaxed);
+        result
+    }
+
+    /// When the audio received so far has been played out, measured from `origin`.
+    fn covered_until(&self) -> Duration {
+        Duration::from_micros(self.covered.load(Ordering::Relaxed))
     }
 
     fn stalled(&self) -> bool {
-        let last = Duration::from_micros(self.last.load(Ordering::Relaxed));
-        self.origin.elapsed().saturating_sub(last) > STALL
+        self.stalled_at(self.origin.elapsed())
+    }
+
+    /// Whether the source counts as stalled at `now` (measured from `origin`).
+    fn stalled_at(&self, now: Duration) -> bool {
+        now.saturating_sub(self.covered_until()) > STALL
     }
 }
 
@@ -592,5 +621,70 @@ pub(crate) fn realtime<R>(f: impl FnOnce() -> R) -> R {
     #[cfg(not(debug_assertions))]
     {
         f()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shirabe_plugin::params::ShirabeParams;
+    use shirabe_plugin::shared::SharedMeters;
+
+    fn feed(rate: f32) -> Arc<Feed> {
+        let params = Arc::new(ShirabeParams::default());
+        let shared = Arc::new(SharedMeters::new());
+        Feed::new(Pump::new(MeterEngine::new(params, shared), rate, 2))
+    }
+
+    fn deliver(feed: &Feed, frames: usize) {
+        let block = vec![0.1f32; frames * 2];
+        feed.with(|pump| pump.interleaved(&block, 2));
+    }
+
+    #[test]
+    fn a_burst_of_short_reads_is_not_taken_for_a_stalled_source() {
+        // An 8192-frame PipeWire quantum (171 ms at 48 kHz) read in 10 ms pieces.
+        let feed = feed(48_000.0);
+        let start = feed.origin.elapsed();
+        for _ in 0..17 {
+            deliver(&feed, 480);
+        }
+        // The next burst is due ~171 ms later; silence before then would push the meters
+        // down between two bursts of real audio.
+        assert!(!feed.stalled_at(start + Duration::from_millis(150)));
+        assert!(!feed.stalled_at(start + Duration::from_millis(250)));
+        // Once the received audio has run out for longer than the limit, it has stopped.
+        assert!(feed.stalled_at(start + Duration::from_millis(400)));
+    }
+
+    #[test]
+    fn one_large_block_counts_for_its_whole_length() {
+        let feed = feed(48_000.0);
+        let start = feed.origin.elapsed();
+        deliver(&feed, 8192);
+        assert!(!feed.stalled_at(start + Duration::from_millis(250)));
+        assert!(feed.stalled_at(start + Duration::from_millis(400)));
+    }
+
+    #[test]
+    fn a_source_with_small_blocks_keeps_the_short_stall_limit() {
+        let feed = feed(48_000.0);
+        let start = feed.origin.elapsed();
+        deliver(&feed, 480);
+        assert!(!feed.stalled_at(start + Duration::from_millis(100)));
+        assert!(feed.stalled_at(start + Duration::from_millis(130)));
+    }
+
+    #[test]
+    fn audio_after_a_pause_starts_a_new_span() {
+        // Data that arrives after the previous audio ran out must not be credited to the
+        // past, or a real stop would be noticed late.
+        let feed = feed(48_000.0);
+        deliver(&feed, 480);
+        std::thread::sleep(Duration::from_millis(30));
+        let resumed = feed.origin.elapsed();
+        deliver(&feed, 480);
+        assert!(feed.covered_until() >= resumed + Duration::from_millis(10));
+        assert!(feed.stalled_at(resumed + Duration::from_millis(130)));
     }
 }
