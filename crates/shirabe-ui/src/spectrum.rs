@@ -172,7 +172,7 @@ pub fn draw(painter: &Painter, rect: Rect, render: &SpectrumRender<'_>, theme: &
     }
 
     // Frequency grid and labels.
-    for (hz, label) in [
+    let labels = [
         (20.0f32, "20"),
         (50.0, "50"),
         (100.0, "100"),
@@ -183,7 +183,8 @@ pub fn draw(painter: &Painter, rect: Rect, render: &SpectrumRender<'_>, theme: &
         (5000.0, "5k"),
         (10_000.0, "10k"),
         (20_000.0, "20k"),
-    ] {
+    ];
+    for (index, &(hz, label)) in labels.iter().enumerate() {
         let x = log_x(plot, hz);
         painter.line_segment(
             [pos2(x, plot.top()), pos2(x, plot.bottom())],
@@ -191,7 +192,7 @@ pub fn draw(painter: &Painter, rect: Rect, render: &SpectrumRender<'_>, theme: &
         );
         painter.text(
             pos2(x, plot.bottom() + 2.0),
-            Align2::CENTER_TOP,
+            edge_label_align(index, labels.len()),
             label,
             FontId::proportional(9.0),
             theme.text_dim,
@@ -213,6 +214,18 @@ pub fn draw(painter: &Painter, rect: Rect, render: &SpectrumRender<'_>, theme: &
     match render.mode {
         Mode::Fft => draw_fft(&plot_painter, plot, render, theme),
         Mode::Rta => draw_rta(&plot_painter, plot, render, theme),
+    }
+}
+
+/// Anchor of a frequency label: the labels on the plot edges (20 Hz, 20 kHz) are aligned
+/// inwards so they are not cut off by the tile border.
+fn edge_label_align(index: usize, count: usize) -> Align2 {
+    if index == 0 {
+        Align2::LEFT_TOP
+    } else if index + 1 == count {
+        Align2::RIGHT_TOP
+    } else {
+        Align2::CENTER_TOP
     }
 }
 
@@ -325,6 +338,13 @@ fn draw_rta(painter: &Painter, plot: Rect, render: &SpectrumRender<'_>, theme: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edge_frequency_labels_are_aligned_inwards() {
+        assert_eq!(edge_label_align(0, 10), Align2::LEFT_TOP);
+        assert_eq!(edge_label_align(4, 10), Align2::CENTER_TOP);
+        assert_eq!(edge_label_align(9, 10), Align2::RIGHT_TOP);
+    }
 
     #[test]
     fn fractional_columns_follow_a_monotone_slope_between_bin_centres() {
