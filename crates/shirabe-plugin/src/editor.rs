@@ -35,7 +35,9 @@ use crate::params::{
     LayoutPreset, LevelMode, LoudnessScale, LoudnessTarget, LoudnessUnit, ShirabeParams,
     SpectrumMode, TargetSpec, UiLanguage,
 };
+use crate::playout::Playout;
 use crate::shared::SharedMeters;
+use crate::timeline::Snapshot;
 
 const SCALE_WIDTH: f32 = 30.0;
 const CAPTION_HEIGHT: f32 = 16.0;
@@ -62,6 +64,7 @@ pub(crate) fn create(
         params.editor_state.clone(),
         EditorState {
             theme: Theme::dark(),
+            playout: Playout::default(),
             scope: ScopeView::new(),
             history: HistoryView::new(),
             spectrum: SpectrumView::new(),
@@ -89,6 +92,7 @@ pub(crate) fn create(
                     &shared,
                     setter,
                     &state.theme,
+                    &mut state.playout,
                     &mut state.scope,
                     &mut state.history,
                     &mut state.spectrum,
@@ -116,6 +120,7 @@ fn plugin_window(ctx: &egui::Context, params: &ShirabeParams, content: impl FnOn
 /// State owned by one editor instance: the theme and the display-only histories.
 struct EditorState {
     theme: Theme,
+    playout: Playout,
     scope: ScopeView,
     history: HistoryView,
     spectrum: SpectrumView,
@@ -171,6 +176,7 @@ pub fn draw(
     shared: &SharedMeters,
     setter: &ParamSetter,
     theme: &Theme,
+    playout: &mut Playout,
     scope: &mut ScopeView,
     history: &mut HistoryView,
     spectrum: &mut SpectrumView,
@@ -178,10 +184,16 @@ pub fn draw(
     japanese_attempted: bool,
     sidechain_supported: bool,
 ) {
+    let now = ui.input(|i| i.time);
+    let frame = playout.update(shared, now);
+    let values = MeterValues {
+        shared,
+        frame: frame.as_ref(),
+    };
     header(
         ui,
         params,
-        shared,
+        values,
         setter,
         theme,
         text,
@@ -198,7 +210,7 @@ pub fn draw(
     meters(
         ui,
         params,
-        shared,
+        values,
         theme,
         height,
         scope,
@@ -252,13 +264,14 @@ impl ChannelSide {
 fn header(
     ui: &mut egui::Ui,
     params: &ShirabeParams,
-    shared: &SharedMeters,
+    values: MeterValues<'_>,
     setter: &ParamSetter,
     theme: &Theme,
     text: Text,
     japanese_attempted: bool,
     sidechain_supported: bool,
 ) {
+    let shared = values.shared;
     ui.horizontal(|ui| {
         ui.label(
             RichText::new("Shirabe")
@@ -283,7 +296,11 @@ fn header(
             RichText::new(format!(
                 "{} {}",
                 text.corr(),
-                correlation_text(shared.stereo.correlation.load())
+                correlation_text(
+                    values
+                        .frame
+                        .map_or_else(|| shared.stereo.correlation.load(), |p| p.correlation)
+                )
             ))
             .monospace()
             .color(theme.text),
@@ -293,7 +310,12 @@ fn header(
             RichText::new(format!(
                 "{} {}",
                 text.bal(),
-                balance_text(text, shared.stereo.balance.load())
+                balance_text(
+                    text,
+                    values
+                        .frame
+                        .map_or_else(|| shared.stereo.balance.load(), |p| p.balance)
+                )
             ))
             .monospace()
             .color(theme.text),
@@ -508,7 +530,7 @@ impl BarGroup {
 fn meters(
     ui: &mut egui::Ui,
     params: &ShirabeParams,
-    shared: &SharedMeters,
+    values: MeterValues<'_>,
     theme: &Theme,
     height: f32,
     scope: &mut ScopeView,
@@ -517,6 +539,7 @@ fn meters(
     text: Text,
     sidechain_supported: bool,
 ) {
+    let shared = values.shared;
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     if response
@@ -539,6 +562,7 @@ fn meters(
     let loudness = LoudnessView::new(params, text);
     let mut ctx = MeterCtx {
         shared,
+        values,
         params,
         theme,
         loudness: &loudness,
@@ -555,9 +579,17 @@ fn meters(
     views.draw(&painter, &arrangement, &mut ctx);
 }
 
+/// The delayed visual sample and immediate measurement read-outs for one UI frame.
+#[derive(Clone, Copy)]
+struct MeterValues<'a> {
+    shared: &'a SharedMeters,
+    frame: Option<&'a Snapshot>,
+}
+
 /// The state the tile views read while drawing one frame.
 struct MeterCtx<'a> {
     shared: &'a SharedMeters,
+    values: MeterValues<'a>,
     params: &'a ShirabeParams,
     theme: &'a Theme,
     /// Loudness settings resolved once per frame and shared by two tiles.
@@ -600,7 +632,7 @@ fn tile_peak(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
     peak_section(
         painter,
         rect,
-        ctx.shared,
+        ctx.values,
         ctx.theme,
         ctx.channels,
         ctx.target,
@@ -612,7 +644,7 @@ fn tile_level(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
     level_section(
         painter,
         rect,
-        ctx.shared,
+        ctx.values,
         ctx.theme,
         ctx.channels,
         (ctx.params.level_mode.value(), ctx.params.vu_needle.value()),
@@ -621,7 +653,7 @@ fn tile_level(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
 }
 
 fn tile_loudness(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
-    loudness_section(painter, rect, ctx.shared, ctx.theme, ctx.loudness);
+    loudness_section(painter, rect, ctx.values, ctx.theme, ctx.loudness);
 }
 
 fn tile_readout(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
@@ -638,7 +670,7 @@ fn tile_readout(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
 
 fn tile_scope(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
     scope_section(
-        painter, rect, ctx.shared, ctx.params, ctx.theme, ctx.scope, ctx.now, ctx.text,
+        painter, rect, ctx.values, ctx.params, ctx.theme, ctx.scope, ctx.now, ctx.text,
     );
 }
 
@@ -767,13 +799,14 @@ impl Default for HistoryView {
 fn scope_section(
     painter: &Painter,
     rect: Rect,
-    shared: &SharedMeters,
+    values: MeterValues<'_>,
     params: &ShirabeParams,
     theme: &Theme,
     view: &mut ScopeView,
     now: f64,
     text: Text,
 ) {
+    let shared = values.shared;
     let trail_on = params.scope_trail.value();
     let auto = params.scope_auto_gain.value();
     let plane = if params.scope_view_lr.value() {
@@ -784,7 +817,10 @@ fn scope_section(
     let channels = shared
         .active_channels()
         .clamp(1, crate::shared::MAX_CHANNELS);
-    view.update(shared, channels, now, trail_on, auto, plane);
+    let end = values
+        .frame
+        .map_or((0, shared.scope.epoch()), |p| (p.frame, p.scope_epoch));
+    view.update_through(shared, channels, now, trail_on, auto, plane, end);
     let render = ScopeRender {
         points: view.points(),
         plane,
@@ -868,6 +904,29 @@ impl ScopeView {
         auto: bool,
         plane: ScopePlane,
     ) {
+        let epoch = shared.scope.epoch();
+        self.update_through(
+            shared,
+            channels,
+            now,
+            trail_on,
+            auto,
+            plane,
+            (shared.scope.written(), epoch),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_through(
+        &mut self,
+        shared: &SharedMeters,
+        channels: usize,
+        now: f64,
+        trail_on: bool,
+        auto: bool,
+        plane: ScopePlane,
+        (end, expected_epoch): (u64, u64),
+    ) {
         if !now.is_finite() {
             return;
         }
@@ -926,8 +985,18 @@ impl ScopeView {
         }
         self.mono = false;
 
-        let (count, cursor) = shared.scope.read_since(self.cursor, &mut self.raw);
-        if shared.scope.epoch() != epoch {
+        if trail_on {
+            self.trail.prune(now, TRAIL_SECONDS);
+        }
+        if epoch != expected_epoch || end <= self.cursor {
+            return;
+        }
+        // Bound catch-up work even if the scope tile was hidden or the editor suspended.
+        let start = self.cursor.max(end.saturating_sub(self.raw.len() as u64));
+        let Some((count, cursor)) = shared.scope.read_through(start, end, &mut self.raw) else {
+            return;
+        };
+        if shared.scope.epoch() != epoch || count == 0 {
             return;
         }
         self.cursor = cursor;
@@ -954,24 +1023,36 @@ impl ScopeView {
         self.holding = auto && (self.gain.is_holding() || count == 0);
 
         if trail_on {
-            if count > 0 {
-                let start = count.saturating_sub(MAX_POINTS);
-                self.latest_len = count - start;
-                self.latest[..self.latest_len].copy_from_slice(&self.fresh[start..count]);
-            }
             for &(x, y) in &self.fresh[..count] {
                 self.trail.push(x, y, now);
             }
-            self.trail.prune(now, TRAIL_SECONDS);
-        } else {
-            let count = shared.scope.read_latest(&mut self.raw[..MAX_POINTS]);
-            self.clipped = false;
-            for (index, &(left, right)) in self.raw[..count].iter().enumerate() {
+        }
+        if count >= MAX_POINTS {
+            self.latest_len = MAX_POINTS;
+            self.latest
+                .copy_from_slice(&self.fresh[count - MAX_POINTS..count]);
+            if !trail_on {
+                self.clipped = self.raw[count - MAX_POINTS..count]
+                    .iter()
+                    .any(|&(l, r)| is_clipped(&[plane.project(l, r)]));
+            }
+        } else if let Some((live, _)) = shared.scope.read_through(
+            cursor.saturating_sub(MAX_POINTS as u64),
+            cursor,
+            &mut self.raw[..MAX_POINTS],
+        ) {
+            if shared.scope.epoch() != epoch {
+                return;
+            }
+            if !trail_on {
+                self.clipped = false;
+            }
+            for (index, &(left, right)) in self.raw[..live].iter().enumerate() {
                 let (x, y) = plane.project(left, right);
                 self.clipped |= is_clipped(&[(x, y)]);
                 self.latest[index] = (x * factor, y * factor);
             }
-            self.latest_len = count;
+            self.latest_len = live;
         }
     }
 
@@ -1027,12 +1108,13 @@ fn caption(shared: &SharedMeters, index: usize) -> String {
 fn peak_section(
     painter: &Painter,
     rect: Rect,
-    shared: &SharedMeters,
+    values: MeterValues<'_>,
     theme: &Theme,
     channels: usize,
     target: TargetSpec,
     text: Text,
 ) {
+    let shared = values.shared;
     let scale = MeterScale::PEAK_DBFS;
     let group = BarGroup::new(rect, channels);
     group.draw_frame(painter, text.peak_title(), &scale, theme, 0.0);
@@ -1040,7 +1122,10 @@ fn peak_section(
     for index in 0..channels {
         let bar = group.bar(index);
         let r = shared.channel(index);
-        let level = r.level_db.load(Ordering::Relaxed);
+        let level = values.frame.map_or_else(
+            || r.level_db.load(Ordering::Relaxed),
+            |p| p.channels[index].level_db,
+        );
         let hold = r.hold_db.load(Ordering::Relaxed);
         let max = r.max_db.load(Ordering::Relaxed);
         let tp = r.true_peak_max_db.load(Ordering::Relaxed);
@@ -1135,12 +1220,13 @@ fn bbc_mark(db: f32) -> f32 {
 fn level_section(
     painter: &Painter,
     rect: Rect,
-    shared: &SharedMeters,
+    values: MeterValues<'_>,
     theme: &Theme,
     channels: usize,
     (mode, needle): (LevelMode, bool),
     text: Text,
 ) {
+    let shared = values.shared;
     let view = LevelView::new(mode, text);
     if mode == LevelMode::Vu && needle {
         painter.text(
@@ -1157,10 +1243,11 @@ fn level_section(
             let face =
                 Rect::from_min_max(pos2(rect.left(), y), pos2(rect.right(), y + height - 4.0));
             let value = shared.channel(index).vu.load(Ordering::Relaxed);
+            let displayed = values.frame.map_or(value, |p| p.channels[index].vu);
             shirabe_ui::vu_dial::draw(
                 painter,
                 face,
-                value,
+                displayed,
                 &caption(shared, index),
                 &view.readout(mode, value),
                 theme,
@@ -1198,15 +1285,24 @@ fn level_section(
     for index in 0..channels {
         let bar = group.bar(index);
         let r = shared.channel(index);
-        let value = match mode {
-            LevelMode::Vu => r.vu.load(Ordering::Relaxed),
+        let convert_ppm = |db| {
+            if db <= MINUS_INFINITY_DB {
+                MINUS_INFINITY_DB
+            } else {
+                db + view.offset
+            }
+        };
+        let (value, displayed) = match mode {
+            LevelMode::Vu => {
+                let live = r.vu.load(Ordering::Relaxed);
+                (live, values.frame.map_or(live, |p| p.channels[index].vu))
+            }
             _ => {
-                let db = r.ppm_db.load(Ordering::Relaxed);
-                if db <= MINUS_INFINITY_DB {
-                    MINUS_INFINITY_DB
-                } else {
-                    db + view.offset
-                }
+                let live = r.ppm_db.load(Ordering::Relaxed);
+                (
+                    convert_ppm(live),
+                    convert_ppm(values.frame.map_or(live, |p| p.channels[index].ppm_db)),
+                )
             }
         };
         draw_level_bar(
@@ -1215,7 +1311,7 @@ fn level_section(
             &view.scale,
             theme,
             &zones,
-            value,
+            displayed,
             MINUS_INFINITY_DB,
         );
         let colour = if value >= view.over_from {
@@ -1336,10 +1432,11 @@ impl LoudnessView {
 fn loudness_section(
     painter: &Painter,
     rect: Rect,
-    shared: &SharedMeters,
+    values: MeterValues<'_>,
     theme: &Theme,
     view: &LoudnessView,
 ) {
+    let shared = values.shared;
     let group = BarGroup::new(rect, 2);
     let label_offset = view.label_offset();
     let title = format!("{} {}  {}", view.mode_name, view.scale_name, view.unit());
@@ -1350,6 +1447,15 @@ fn loudness_section(
         ("M", l.momentary.load(), l.max_momentary.load()),
         ("S", l.short_term.load(), l.max_short_term.load()),
     ];
+    let smooth = |index, value| {
+        values.frame.map_or(value, |p| {
+            if index == 0 {
+                p.momentary
+            } else {
+                p.short_term
+            }
+        })
+    };
     for (index, (name, value, max)) in bars.into_iter().enumerate() {
         let bar = group.bar(index);
         draw_level_bar(
@@ -1358,7 +1464,7 @@ fn loudness_section(
             &view.scale,
             theme,
             &zones,
-            view.scale_value(value),
+            view.scale_value(smooth(index, value)),
             view.scale_value(max),
         );
         draw_marker(painter, bar, &view.scale, 0.0, theme.text);
@@ -1931,6 +2037,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn scope_trace_and_trail_end_at_the_playout_cursor() {
+        let shared = SharedMeters::new();
+        let left: Vec<_> = (0..8192).map(|i| i as f32 / 8192.0).collect();
+        shared.scope.push(&left, &left);
+        let mut view = ScopeView::new();
+        let epoch = shared.scope.epoch();
+        for (index, end) in [2400, 3200, 4000].into_iter().enumerate() {
+            view.update_through(
+                &shared,
+                2,
+                index as f64 / 60.0,
+                true,
+                false,
+                ScopePlane::LeftRight,
+                (end as u64, epoch),
+            );
+            assert_eq!(
+                view.points(),
+                &left[end - MAX_POINTS..end]
+                    .iter()
+                    .map(|&x| (x, x))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(view.trail().len(), end);
+            assert_eq!(view.new_samples(), if index == 0 { 2400 } else { 800 });
+        }
+    }
+
+    #[test]
     fn the_editor_registers_every_tile_once() {
         let views = editor_views();
         let registry = MeterViewRegistry::new(&views).expect("the tiles are unique");
@@ -2005,6 +2140,7 @@ mod tests {
             );
         }
         let theme = Theme::dark();
+        let mut playout = Playout::default();
         let mut scope = ScopeView::new();
         let mut history = HistoryView::new();
         let mut spectrum = SpectrumView::new();
@@ -2025,6 +2161,7 @@ mod tests {
                         &shared,
                         &setter,
                         &theme,
+                        &mut playout,
                         &mut scope,
                         &mut history,
                         &mut spectrum,
@@ -2282,6 +2419,7 @@ mod tests {
         // English never loads a CJK font: the plug-in stays small in memory.
         let mut state = EditorState {
             theme: Theme::dark(),
+            playout: Playout::default(),
             scope: ScopeView::new(),
             history: HistoryView::new(),
             spectrum: SpectrumView::new(),
@@ -2302,6 +2440,7 @@ mod tests {
         // what the new fonts cover.
         let mut state = EditorState {
             theme: Theme::dark(),
+            playout: Playout::default(),
             scope: ScopeView::new(),
             history: HistoryView::new(),
             spectrum: SpectrumView::new(),

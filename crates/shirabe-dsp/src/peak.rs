@@ -79,10 +79,18 @@ impl PeakMeter {
             return;
         }
 
-        let block_peak = samples.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
-        let block_peak_db = gain_to_db(block_peak);
-        let block_len = samples.len() as u64;
-        let block_seconds = samples.len() as f32 / self.sample_rate;
+        let peak = samples.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
+        self.process_peak(peak, samples.len());
+    }
+
+    /// Applies the same ballistics to a non-empty block's precomputed absolute peak.
+    pub fn process_peak(&mut self, peak: f32, frames: usize) {
+        if frames == 0 {
+            return;
+        }
+        let block_peak_db = gain_to_db(peak);
+        let block_len = frames as u64;
+        let block_seconds = frames as f32 / self.sample_rate;
 
         let released = self.level_db - self.ballistics.release_db_per_second * block_seconds;
         self.level_db = block_peak_db.max(released).max(MINUS_INFINITY_DB);

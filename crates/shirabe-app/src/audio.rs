@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, SizedSample};
+use cpal::{BufferSize, FromSample, Sample, SampleFormat, SizedSample, SupportedBufferSize};
 use serde::{Deserialize, Serialize};
 use shirabe_plugin::engine::MeterEngine;
 
@@ -442,23 +442,37 @@ pub fn start(
             let stride = config.channels() as usize;
             let rate = config.sample_rate().0 as f32;
             let feed = Feed::new(Pump::new(engine, rate, stride.min(2)));
-            let stream_config: cpal::StreamConfig = config.config();
-            let err = error.clone();
-            let on_error = move |e: cpal::StreamError| {
-                *err.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.to_string());
+            let mut stream_config = config.config();
+            let open = |c: &cpal::StreamConfig| {
+                let err = error.clone();
+                let on_error = move |e: cpal::StreamError| {
+                    *err.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.to_string());
+                };
+                let f = feed.clone();
+                match config.sample_format() {
+                    SampleFormat::F32 => build::<f32>(&dev, c, f, stride, on_error),
+                    SampleFormat::I16 => build::<i16>(&dev, c, f, stride, on_error),
+                    SampleFormat::I32 => build::<i32>(&dev, c, f, stride, on_error),
+                    SampleFormat::U16 => build::<u16>(&dev, c, f, stride, on_error),
+                    SampleFormat::F64 => build::<f64>(&dev, c, f, stride, on_error),
+                    SampleFormat::I8 => build::<i8>(&dev, c, f, stride, on_error),
+                    SampleFormat::U8 => build::<u8>(&dev, c, f, stride, on_error),
+                    other => Err(anyhow!("unsupported sample format {other}")),
+                }
             };
-            let f = feed.clone();
-            let c = &stream_config;
-            let stream = match config.sample_format() {
-                SampleFormat::F32 => build::<f32>(&dev, c, f, stride, on_error),
-                SampleFormat::I16 => build::<i16>(&dev, c, f, stride, on_error),
-                SampleFormat::I32 => build::<i32>(&dev, c, f, stride, on_error),
-                SampleFormat::U16 => build::<u16>(&dev, c, f, stride, on_error),
-                SampleFormat::F64 => build::<f64>(&dev, c, f, stride, on_error),
-                SampleFormat::I8 => build::<i8>(&dev, c, f, stride, on_error),
-                SampleFormat::U8 => build::<u8>(&dev, c, f, stride, on_error),
-                other => Err(anyhow!("unsupported sample format {other}")),
-            }?;
+            let stream = if let Some(frames) = preferred_input_frames(
+                config.sample_rate().0,
+                config.buffer_size(),
+                h.id().name() == "ALSA",
+            ) {
+                stream_config.buffer_size = BufferSize::Fixed(frames);
+                open(&stream_config).or_else(|_| {
+                    stream_config.buffer_size = BufferSize::Default;
+                    open(&stream_config)
+                })?
+            } else {
+                open(&stream_config)?
+            };
             stream.play().context("cannot start the stream")?;
             let what = if loopback { "Playing on " } else { "" };
             Ok(Running {
@@ -588,6 +602,17 @@ fn find(
     devices.find(matches).or_else(|| default.filter(matches))
 }
 
+/// Requests a period of about 10 ms only within the device's advertised buffer range.
+fn preferred_input_frames(rate: u32, supported: &SupportedBufferSize, alsa: bool) -> Option<u32> {
+    let &SupportedBufferSize::Range { min, max } = supported else {
+        return None;
+    };
+    // cpal's ALSA backend uses Fixed(v) for the entire buffer and v/4 for the period.
+    let period = ((rate + 50) / 100).max(1);
+    let frames = if alsa { period * 4 } else { period };
+    (min..=max).contains(&frames).then_some(frames)
+}
+
 fn build<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -629,6 +654,19 @@ mod tests {
     use super::*;
     use shirabe_plugin::params::ShirabeParams;
     use shirabe_plugin::shared::SharedMeters;
+
+    #[test]
+    fn requests_ten_ms_period_only_when_supported() {
+        let range = SupportedBufferSize::Range { min: 64, max: 4096 };
+        assert_eq!(preferred_input_frames(48_000, &range, false), Some(480));
+        assert_eq!(preferred_input_frames(44_100, &range, true), Some(1764));
+        assert_eq!(
+            preferred_input_frames(48_000, &SupportedBufferSize::Unknown, false),
+            None
+        );
+        let small = SupportedBufferSize::Range { min: 64, max: 512 };
+        assert_eq!(preferred_input_frames(48_000, &small, true), None);
+    }
 
     fn feed(rate: f32) -> Arc<Feed> {
         let params = Arc::new(ShirabeParams::default());

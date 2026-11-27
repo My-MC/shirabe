@@ -12,8 +12,13 @@ use shirabe_dsp::spectrum::SpectrumCapture;
 use shirabe_dsp::stereo::StereoStatsReadout;
 use shirabe_dsp::{ChannelLayout, LoudnessReadout, PeakMeter, MINUS_INFINITY_DB};
 
+use crate::timeline::Timeline;
+
 /// Maximum number of channels the meters are pre-allocated for.
 pub const MAX_CHANNELS: usize = 8;
+
+// The 250 ms playout budget at up to 384 kHz, plus the live trace and burst headroom.
+const DELAYED_SCOPE_CAPACITY: usize = 131_072;
 
 /// Read-outs of one channel.
 pub struct ChannelReadout {
@@ -226,6 +231,7 @@ pub struct SharedMeters {
     /// Recent stereo frames for the Lissajous view (audio thread writes, editor reads).
     /// Empty while the input is mono.
     pub scope: StereoScope,
+    pub(crate) timeline: Timeline,
     /// Momentary and short-term loudness at 10 points per second (audio thread writes, editor
     /// reads). Display-only: it never feeds back into a measurement.
     pub history: LoudnessHistory,
@@ -254,7 +260,8 @@ impl SharedMeters {
             loudness: LoudnessShared::new(),
             reference: ReferenceShared::new(),
             stereo: StereoShared::new(),
-            scope: StereoScope::new(),
+            scope: StereoScope::with_capacity(DELAYED_SCOPE_CAPACITY),
+            timeline: Timeline::new(),
             history: LoudnessHistory::new(),
             spectrum: SpectrumCapture::new(),
             active_channels: AtomicUsize::new(2),
@@ -289,9 +296,16 @@ impl SharedMeters {
         self.loudness.plr.store(None);
         self.reference.clear();
         self.stereo.clear();
-        self.scope.clear();
+        self.clear_display_capture();
         self.history.clear();
         self.spectrum.clear();
+    }
+
+    /// Discards delayed display data at a source change, without clearing measured values.
+    /// Only the producer may call this while audio is active.
+    pub fn clear_display_capture(&self) {
+        self.timeline.clear();
+        self.scope.clear();
     }
 
     /// Read-outs of channel `index` (must be below [`MAX_CHANNELS`]).

@@ -107,6 +107,20 @@ fn silence_maps_to_the_centre() {
 }
 
 #[test]
+fn delayed_capture_can_read_a_large_burst_at_an_earlier_cursor() {
+    let scope = StereoScope::with_capacity(32768);
+    let left: Vec<_> = (0..8192).map(|i| i as f32).collect();
+    let right: Vec<_> = left.iter().map(|v| -v).collect();
+    scope.push(&left, &right);
+    let mut out = [(0.0, 0.0); 2048];
+    assert_eq!(scope.read_through(0, 800, &mut out), Some((800, 800)));
+    assert_eq!(out[799], (799.0, -799.0));
+    assert_eq!(scope.read_through(800, 1600, &mut out), Some((800, 1600)));
+    assert_eq!(out[0], (800.0, -800.0));
+    assert_eq!(out[799], (1599.0, -1599.0));
+}
+
+#[test]
 fn read_since_returns_only_frames_written_after_the_cursor() {
     let scope = StereoScope::new();
     scope.push(&[1.0, 2.0], &[-1.0, -2.0]);

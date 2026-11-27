@@ -132,16 +132,24 @@ impl PpmMeter {
 
     /// Processes a block of samples. Does not allocate.
     pub fn process(&mut self, samples: &[f32]) {
+        self.process_segment(samples, true);
+    }
+
+    /// Processes part of a host block so the caller can sample the live detector state.
+    /// Set `end_of_block` only on the last segment to preserve block-end cleanup.
+    pub fn process_segment(&mut self, samples: &[f32], end_of_block: bool) {
         let mut d = self.detector;
         let (w1, w2, release) = (self.w1, self.w2, self.release);
         for &s in samples {
             self.os.push(s as f64, |y| d.step(y.abs(), w1, w2, release));
         }
-        if d.z1.abs() < 1e-12 {
-            d.z1 = 0.0;
-        }
-        if d.z2.abs() < 1e-12 {
-            d.z2 = 0.0;
+        if end_of_block {
+            if d.z1.abs() < 1e-12 {
+                d.z1 = 0.0;
+            }
+            if d.z2.abs() < 1e-12 {
+                d.z2 = 0.0;
+            }
         }
         self.detector = d;
     }

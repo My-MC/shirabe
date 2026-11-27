@@ -16,9 +16,11 @@ use shirabe_dsp::{
 use crate::denormal::DenormalGuard;
 use crate::params::{LevelMode, ShirabeParams};
 use crate::shared::{SharedMeters, MAX_CHANNELS};
+use crate::timeline::{ChannelSample, Snapshot};
 
 /// Frames copied into the spectrum ring per step (no allocation on the audio thread).
 const SPECTRUM_BLOCK: usize = 512;
+const SNAPSHOTS_PER_SECOND: f32 = 200.0;
 
 /// All meters of one Shirabe instance.
 pub struct MeterEngine {
@@ -26,6 +28,13 @@ pub struct MeterEngine {
     shared: Arc<SharedMeters>,
     sample_rate: f32,
     peak: Vec<PeakMeter>,
+    // Sample peak release/hold are block-based. Keep the measured host-block meter
+    // intact and run a separate display envelope on the fixed snapshot grid.
+    display_peak: [PeakMeter; MAX_CHANNELS],
+    pending_peak: [f32; MAX_CHANNELS],
+    display_frame: u64,
+    display_interval: usize,
+    display_pending: usize,
     true_peak: Vec<TruePeakMeter>,
     programme_peak: f32,
     vu: Vec<VuMeter>,
@@ -59,6 +68,11 @@ impl MeterEngine {
             peak: (0..MAX_CHANNELS)
                 .map(|_| PeakMeter::new(sr, PeakBallistics::default()))
                 .collect(),
+            display_peak: std::array::from_fn(|_| PeakMeter::new(sr, PeakBallistics::default())),
+            pending_peak: [0.0; MAX_CHANNELS],
+            display_frame: 0,
+            display_interval: (sr / SNAPSHOTS_PER_SECOND).round() as usize,
+            display_pending: 0,
             true_peak: (0..MAX_CHANNELS).map(|_| TruePeakMeter::new(sr)).collect(),
             programme_peak: MINUS_INFINITY_DB,
             vu: (0..MAX_CHANNELS).map(|_| VuMeter::new(sr, -18.0)).collect(),
@@ -99,6 +113,11 @@ impl MeterEngine {
     pub fn prepare(&mut self, sample_rate: f32, channels: usize, reference_channels: usize) {
         let channels = channels.min(MAX_CHANNELS);
         self.sample_rate = sample_rate;
+        self.display_interval = ((sample_rate / SNAPSHOTS_PER_SECOND).round() as usize).max(1);
+        for meter in &mut self.display_peak {
+            meter.prepare(sample_rate);
+        }
+        self.restart_capture();
         for meter in &mut self.peak {
             meter.prepare(sample_rate);
         }
@@ -151,7 +170,17 @@ impl MeterEngine {
         self.spectrum_channels = 0;
         self.programme_peak = MINUS_INFINITY_DB;
         self.osc.reset();
+        self.restart_capture();
         self.shared.clear();
+    }
+
+    fn restart_capture(&mut self) {
+        self.display_frame = 0;
+        self.display_pending = 0;
+        self.pending_peak.fill(0.0);
+        for meter in &mut self.display_peak {
+            meter.reset();
+        }
     }
 
     /// Clears maxima, integrated loudness and loudness range (keeps the running meters).
@@ -170,6 +199,7 @@ impl MeterEngine {
         }
         // The graph records the programme, so it starts over with it.
         self.shared.history.clear();
+        self.shared.timeline.clear();
         // The spectrum is display-only but shows the same programme, so Reset clears it too.
         self.shared.spectrum.clear();
     }
@@ -211,27 +241,13 @@ impl MeterEngine {
         }
         self.osc_was_enabled = osc_enabled;
 
-        // Feed the Lissajous view and the stereo statistics with the stereo signal as processed
-        // (test oscillator included). Mono inputs publish nothing: a duplicated channel would
-        // look like a perfectly correlated stereo signal.
-        if channels.len() >= 2 {
-            let left: &[f32] = channels[0];
-            let right: &[f32] = channels[1];
-            self.shared.scope.push(left, right);
-            self.stereo.process(left, right);
-            self.stereo_active = true;
-        } else if self.stereo_active {
-            // Back to mono: drop the window so a stale stereo reading does not linger.
-            self.stereo.reset();
-            self.stereo_active = false;
-        }
-        self.shared.stereo.store(&self.stereo.readout());
-
         // Capture the mono sum for the spectrum tile. The ring is bounded and the copy uses a
         // fixed scratch block, so the audio thread neither locks nor allocates.
         if channels.len() != self.spectrum_channels {
             // A layout change must not leave frames from the previous input in the display.
             self.shared.spectrum.clear();
+            self.shared.clear_display_capture();
+            self.restart_capture();
             self.spectrum_channels = channels.len();
         }
         let spectrum_frames = channels.first().map_or(0, |channel| channel.len());
@@ -263,9 +279,18 @@ impl MeterEngine {
                 meter.reset();
             }
             self.level_mode = level_mode;
+            self.shared.timeline.clear();
         }
         let integrating = self.shared.integrating();
         let resuming = integrating && !self.loudness.is_integrating();
+        self.loudness.set_integrating(integrating);
+        if channels.len() < 2 && self.stereo_active {
+            self.stereo.reset();
+        }
+        self.stereo_active = channels.len() >= 2;
+        self.measure_display_segments(channels, frames, vu_reference);
+        self.shared.stereo.store(&self.stereo.readout());
+
         for (index, channel) in channels.iter().take(MAX_CHANNELS).enumerate() {
             let channel: &[f32] = channel;
             let readout = self.shared.channel(index);
@@ -289,27 +314,21 @@ impl MeterEngine {
 
             match level_mode {
                 LevelMode::Vu => {
-                    let vu = &mut self.vu[index];
-                    vu.set_reference(vu_reference);
-                    vu.process(channel);
-                    readout.vu.store(vu.vu(), Ordering::Relaxed);
+                    readout.vu.store(self.vu[index].vu(), Ordering::Relaxed);
                 }
                 LevelMode::PpmTypeI
                 | LevelMode::PpmTypeII
                 | LevelMode::PpmTypeIIBbc
                 | LevelMode::PpmIeee => {
                     let ppm = if level_mode == LevelMode::PpmTypeI {
-                        &mut self.ppm_type_i[index]
+                        &self.ppm_type_i[index]
                     } else {
-                        &mut self.ppm_type_ii[index]
+                        &self.ppm_type_ii[index]
                     };
-                    ppm.process(channel);
                     readout.ppm_db.store(ppm.level_db(), Ordering::Relaxed);
                 }
             }
         }
-        self.loudness.set_integrating(integrating);
-        self.loudness.process(channels);
         self.shared
             .programme_seconds
             .store(self.loudness.programme_seconds() as f32, Ordering::Relaxed);
@@ -348,5 +367,82 @@ impl MeterEngine {
                 .map(|i| f64::from(self.programme_peak) - i),
         );
         self.shared.blocks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn measure_display_segments(&mut self, channels: &[&mut [f32]], frames: usize, reference: f32) {
+        let channels = &channels[..channels.len().min(MAX_CHANNELS)];
+        if self.level_mode == LevelMode::Vu {
+            for meter in &mut self.vu[..channels.len()] {
+                meter.set_reference(reference);
+            }
+        }
+        let mut start = 0;
+        // Keep the old empty-block VU/PPM cleanup as well as the non-empty host boundaries.
+        loop {
+            let count = (frames - start).min(self.display_interval - self.display_pending);
+            let end = start + count;
+            let mut slices = [&[][..]; MAX_CHANNELS];
+            for (index, channel) in channels.iter().enumerate() {
+                let segment = &channel[start..end];
+                slices[index] = segment;
+                self.pending_peak[index] = segment
+                    .iter()
+                    .fold(self.pending_peak[index], |peak, sample| {
+                        peak.max(sample.abs())
+                    });
+                match self.level_mode {
+                    LevelMode::Vu => self.vu[index].process_segment(segment, end == frames),
+                    LevelMode::PpmTypeI => {
+                        self.ppm_type_i[index].process_segment(segment, end == frames);
+                    }
+                    _ => self.ppm_type_ii[index].process_segment(segment, end == frames),
+                }
+            }
+            self.loudness.process(&slices[..channels.len()]);
+            if self.stereo_active {
+                self.shared.scope.push(slices[0], slices[1]);
+                self.stereo.process(slices[0], slices[1]);
+            }
+            self.display_pending += count;
+            self.display_frame += count as u64;
+            if self.display_pending == self.display_interval {
+                self.publish_snapshot(channels.len());
+                self.display_pending = 0;
+                self.pending_peak.fill(0.0);
+            }
+            if end == frames {
+                break;
+            }
+            start = end;
+        }
+    }
+
+    fn publish_snapshot(&mut self, channels: usize) {
+        let loudness = self.loudness.readout();
+        let stereo = self.stereo.readout();
+        let mut point = Snapshot {
+            frame: self.display_frame,
+            scope_epoch: self.shared.scope.epoch(),
+            momentary: loudness.momentary.map(|x| x as f32),
+            short_term: loudness.short_term.map(|x| x as f32),
+            correlation: stereo.correlation,
+            balance: stereo.balance,
+            ..Snapshot::default()
+        };
+        for index in 0..channels {
+            let peak = &mut self.display_peak[index];
+            peak.process_peak(self.pending_peak[index], self.display_interval);
+            let mut channel = ChannelSample {
+                level_db: peak.level_db(),
+                ..ChannelSample::default()
+            };
+            match self.level_mode {
+                LevelMode::Vu => channel.vu = self.vu[index].vu(),
+                LevelMode::PpmTypeI => channel.ppm_db = self.ppm_type_i[index].level_db(),
+                _ => channel.ppm_db = self.ppm_type_ii[index].level_db(),
+            }
+            point.channels[index] = channel;
+        }
+        self.shared.timeline.push(point);
     }
 }

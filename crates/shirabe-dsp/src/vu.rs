@@ -94,6 +94,12 @@ impl VuMeter {
 
     /// Processes a block of samples.
     pub fn process(&mut self, samples: &[f32]) {
+        self.process_segment(samples, true);
+    }
+
+    /// Processes part of a host block so the caller can sample the live detector state.
+    /// Set `end_of_block` only on the last segment to preserve block-end cleanup.
+    pub fn process_segment(&mut self, samples: &[f32], end_of_block: bool) {
         let w2 = self.omega * self.omega;
         let damping = 2.0 * DAMPING * self.omega;
         // Semi-implicit Euler is stable here: omega * dt is far below 1 at audio rates.
@@ -108,11 +114,13 @@ impl VuMeter {
         }
         self.position = position;
         self.velocity = velocity;
-        if self.position.abs() < 1e-20 {
-            self.position = 0.0;
-        }
-        if self.velocity.abs() < 1e-20 {
-            self.velocity = 0.0;
+        if end_of_block {
+            if self.position.abs() < 1e-20 {
+                self.position = 0.0;
+            }
+            if self.velocity.abs() < 1e-20 {
+                self.velocity = 0.0;
+            }
         }
     }
 

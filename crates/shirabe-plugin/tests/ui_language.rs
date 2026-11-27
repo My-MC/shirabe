@@ -104,6 +104,7 @@ fn render(
     raw_context: &dyn GuiContext,
 ) -> Frame {
     let theme = Theme::dark();
+    let mut playout = shirabe_plugin::playout::Playout::default();
     let mut scope = ScopeView::new();
     let mut history = HistoryView::new();
     let mut spectrum = SpectrumView::new();
@@ -122,6 +123,7 @@ fn render(
                     shared,
                     &setter,
                     &theme,
+                    &mut playout,
                     &mut scope,
                     &mut history,
                     &mut spectrum,

@@ -5,10 +5,9 @@
 //! when the editor falls behind, the oldest frames are overwritten, because a scope only ever
 //! displays the recent past.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{fence, AtomicU64, Ordering};
 
-/// Number of stereo frames kept for the display (32 KiB). A single packed frame is atomic;
-/// a slow reader can still copy frames from different generations if the writer laps it.
+/// Default number of stereo frames kept by a short, undelayed capture.
 pub const SCOPE_CAPACITY: usize = 4096;
 
 /// Packs two samples into one atomic word so that a frame is never torn.
@@ -35,10 +34,12 @@ pub fn mid_side(left: f32, right: f32) -> (f32, f32) {
 
 /// A bounded, lock-free stereo sample ring.
 ///
-/// One producer (the audio thread) and any number of readers (the editor). No method
-/// allocates or blocks.
+/// One producer (the audio thread) and any number of readers (the editor). After
+/// construction, no method allocates or blocks.
 pub struct StereoScope {
-    slots: [AtomicU64; SCOPE_CAPACITY],
+    slots: Box<[AtomicU64]>,
+    /// Exclusive end reserved by the producer, including any in-flight writes.
+    reserved: AtomicU64,
     /// Number of frames written since the last clear; wraps only after 2^64 frames.
     written: AtomicU64,
     /// Incremented by every clear, so a reader can discard points from before a source reset.
@@ -48,8 +49,17 @@ pub struct StereoScope {
 impl StereoScope {
     /// Creates an empty scope.
     pub fn new() -> Self {
+        Self::with_capacity(SCOPE_CAPACITY)
+    }
+
+    /// Creates a scope retaining `capacity` stereo frames (a nonzero power of two).
+    pub fn with_capacity(capacity: usize) -> Self {
+        assert!(capacity.is_power_of_two());
         Self {
-            slots: std::array::from_fn(|_| AtomicU64::new(pack(0.0, 0.0))),
+            slots: (0..capacity)
+                .map(|_| AtomicU64::new(pack(0.0, 0.0)))
+                .collect(),
+            reserved: AtomicU64::new(0),
             written: AtomicU64::new(0),
             epoch: AtomicU64::new(0),
         }
@@ -58,6 +68,7 @@ impl StereoScope {
     /// Discards every captured frame. Only the producer may call this while capturing;
     /// other callers must first stop the producer.
     pub fn clear(&self) {
+        self.reserved.store(0, Ordering::Relaxed);
         self.written.store(0, Ordering::Relaxed);
         self.epoch.fetch_add(1, Ordering::Release);
     }
@@ -69,33 +80,24 @@ impl StereoScope {
         if frames == 0 {
             return;
         }
-        // The counter is advanced once, after the samples, so a reader never sees a slot
-        // that has been announced but not yet written.
         let start = self.written.load(Ordering::Relaxed);
-        for i in 0..frames {
-            let index = ((start + i as u64) % SCOPE_CAPACITY as u64) as usize;
+        let end = start + frames as u64;
+        self.reserved.store(end, Ordering::Relaxed);
+        fence(Ordering::Release);
+        let mask = self.slots.len() - 1;
+        // When a single callback exceeds the capacity, only the tail can remain.
+        for i in frames.saturating_sub(self.slots.len())..frames {
+            let index = (start as usize + i) & mask;
             self.slots[index].store(pack(left[i], right[i]), Ordering::Relaxed);
         }
-        self.written.fetch_add(frames as u64, Ordering::Release);
+        self.written.store(end, Ordering::Release);
     }
 
     /// Copies the newest frames into `out`, oldest first, and returns how many were copied.
-    ///
-    /// At most [`SCOPE_CAPACITY`] frames and at most `out.len()` frames are returned; before
-    /// any audio has been captured the result is 0.
     pub fn read_latest(&self, out: &mut [(f32, f32)]) -> usize {
-        let written = self.written.load(Ordering::Acquire);
-        let available = written.min(SCOPE_CAPACITY as u64) as usize;
-        let count = out.len().min(available);
-        if count == 0 {
-            return 0;
-        }
-        let first = written - count as u64;
-        for (k, slot) in out[..count].iter_mut().enumerate() {
-            let index = ((first + k as u64) % SCOPE_CAPACITY as u64) as usize;
-            *slot = unpack(self.slots[index].load(Ordering::Relaxed));
-        }
-        count
+        let end = self.written();
+        self.read_through(end.saturating_sub(out.len() as u64), end, out)
+            .map_or(0, |(n, _)| n)
     }
 
     /// Number of frames written since the last [`clear`](Self::clear).
@@ -113,26 +115,44 @@ impl StereoScope {
     }
 
     /// Copies frames written after `cursor` and returns them with the new cursor.
-    ///
-    /// This is the incremental reader used by the Lissajous trail: each UI frame only
-    /// consumes frames it has not seen. When the reader falls more than [`SCOPE_CAPACITY`]
-    /// frames behind, the overwritten frames are skipped and the cursor resumes at the
-    /// oldest frame still in the ring. After a clear, a stale cursor simply returns no
-    /// frames; callers normally watch [`epoch`](Self::epoch) as well.
+    /// If a concurrent write invalidates the copy, returns no frames without advancing.
     pub fn read_since(&self, cursor: u64, out: &mut [(f32, f32)]) -> (usize, u64) {
-        let written = self.written.load(Ordering::Acquire);
-        if cursor > written {
-            // The ring was cleared (or the counter wrapped) since the reader last looked.
-            return (0, written);
-        }
-        let oldest = written.saturating_sub(SCOPE_CAPACITY as u64);
-        let start = cursor.max(oldest);
-        let count = out.len().min((written - start) as usize);
+        self.read_through(cursor, self.written(), out)
+            .unwrap_or((0, cursor))
+    }
+
+    /// Copies retained frames between `cursor` and the exclusive `end`, oldest first.
+    /// Skips overwritten frames and returns the number copied and the new cursor.
+    /// Returns `None` if a concurrent clear or wrap may have invalidated the copy.
+    pub fn read_through(
+        &self,
+        cursor: u64,
+        end: u64,
+        out: &mut [(f32, f32)],
+    ) -> Option<(usize, u64)> {
+        let epoch = self.epoch();
+        let written = self.written();
+        let end = end.min(written);
+        let len = self.slots.len();
+        let oldest = self
+            .reserved
+            .load(Ordering::Acquire)
+            .saturating_sub(len as u64);
+        let start = cursor.max(oldest).min(end);
+        let count = out.len().min((end - start) as usize);
         for (k, slot) in out[..count].iter_mut().enumerate() {
-            let index = ((start + k as u64) % SCOPE_CAPACITY as u64) as usize;
+            let index = (start as usize + k) & (len - 1);
             *slot = unpack(self.slots[index].load(Ordering::Relaxed));
         }
-        (count, start + count as u64)
+        // An overwritten payload synchronizes the writer's reservation with this check.
+        fence(Ordering::Acquire);
+        let overwritten = count != 0
+            && start
+                < self
+                    .reserved
+                    .load(Ordering::Relaxed)
+                    .saturating_sub(len as u64);
+        (!overwritten && self.epoch() == epoch).then_some((count, start + count as u64))
     }
 }
 
@@ -145,7 +165,7 @@ impl Default for StereoScope {
 impl std::fmt::Debug for StereoScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StereoScope")
-            .field("capacity", &SCOPE_CAPACITY)
+            .field("capacity", &self.slots.len())
             .field("written", &self.written.load(Ordering::Relaxed))
             .field("epoch", &self.epoch.load(Ordering::Relaxed))
             .finish()

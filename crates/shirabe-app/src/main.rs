@@ -30,6 +30,7 @@ use std::time::{Duration, Instant, SystemTime};
 use eframe::egui;
 use nih_plug::prelude::ParamSetter;
 use shirabe_plugin::engine::MeterEngine;
+use shirabe_plugin::playout::Playout;
 use shirabe_plugin::shared::SharedMeters;
 use shirabe_plugin::{
     editor::{self, HistoryView, ScopeView, SpectrumView},
@@ -104,6 +105,7 @@ struct App {
     saved_params: std::collections::BTreeMap<String, f32>,
     /// Display-only history of the Lissajous view.
     scope: ScopeView,
+    playout: Playout,
     /// Display-only history of the loudness graph.
     history: HistoryView,
     spectrum: SpectrumView,
@@ -178,6 +180,7 @@ impl App {
             host,
             saved_params: settings.params.clone(),
             scope: ScopeView::new(),
+            playout: Playout::default(),
             history: HistoryView::new(),
             spectrum: SpectrumView::new(),
             last_check: Instant::now(),
@@ -216,6 +219,7 @@ impl App {
         if let Source::File { path } = &source {
             if path.trim().is_empty() {
                 // The mode is valid without a file; playback starts once one is chosen.
+                self.shared.clear_display_capture();
                 self.source = source;
                 self.start_error = None;
                 return;
@@ -956,6 +960,7 @@ impl eframe::App for App {
                 &self.shared,
                 &setter,
                 &self.theme,
+                &mut self.playout,
                 &mut self.scope,
                 &mut self.history,
                 &mut self.spectrum,

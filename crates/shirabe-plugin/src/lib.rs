@@ -17,7 +17,11 @@ pub mod editor;
 pub mod engine;
 pub mod fonts;
 pub mod params;
+pub mod playout;
 pub mod shared;
+mod timeline;
+#[cfg(test)]
+mod timeline_tests;
 
 use engine::MeterEngine;
 pub use params::ShirabeParams;
