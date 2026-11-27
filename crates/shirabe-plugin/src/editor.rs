@@ -296,11 +296,7 @@ fn header(
             RichText::new(format!(
                 "{} {}",
                 text.corr(),
-                correlation_text(
-                    values
-                        .frame
-                        .map_or_else(|| shared.stereo.correlation.load(), |p| p.correlation)
-                )
+                correlation_text(values.frame.and_then(|p| p.correlation))
             ))
             .monospace()
             .color(theme.text),
@@ -310,12 +306,7 @@ fn header(
             RichText::new(format!(
                 "{} {}",
                 text.bal(),
-                balance_text(
-                    text,
-                    values
-                        .frame
-                        .map_or_else(|| shared.stereo.balance.load(), |p| p.balance)
-                )
+                balance_text(text, values.frame.and_then(|p| p.balance))
             ))
             .monospace()
             .color(theme.text),
@@ -1122,15 +1113,19 @@ fn peak_section(
     for index in 0..channels {
         let bar = group.bar(index);
         let r = shared.channel(index);
-        let level = values.frame.map_or_else(
-            || r.level_db.load(Ordering::Relaxed),
-            |p| p.channels[index].level_db,
-        );
-        let hold = r.hold_db.load(Ordering::Relaxed);
+        let sample = values.frame.map(|p| p.channels[index]).unwrap_or_default();
         let max = r.max_db.load(Ordering::Relaxed);
         let tp = r.true_peak_max_db.load(Ordering::Relaxed);
 
-        draw_level_bar(painter, bar, &scale, theme, &theme.zones, level, hold);
+        draw_level_bar(
+            painter,
+            bar,
+            &scale,
+            theme,
+            &theme.zones,
+            sample.level_db,
+            sample.hold_db,
+        );
         draw_marker(painter, bar, &scale, ceiling, theme.text_dim);
 
         let max_colour = if max >= 0.0 { theme.over } else { theme.text };
@@ -1242,14 +1237,15 @@ fn level_section(
             let y = top + height * index as f32;
             let face =
                 Rect::from_min_max(pos2(rect.left(), y), pos2(rect.right(), y + height - 4.0));
-            let value = shared.channel(index).vu.load(Ordering::Relaxed);
-            let displayed = values.frame.map_or(value, |p| p.channels[index].vu);
+            let displayed = values
+                .frame
+                .map_or(MINUS_INFINITY_DB, |p| p.channels[index].vu);
             shirabe_ui::vu_dial::draw(
                 painter,
                 face,
                 displayed,
                 &caption(shared, index),
-                &view.readout(mode, value),
+                &view.readout(mode, displayed),
                 theme,
             );
         }
@@ -1284,7 +1280,6 @@ fn level_section(
     }
     for index in 0..channels {
         let bar = group.bar(index);
-        let r = shared.channel(index);
         let convert_ppm = |db| {
             if db <= MINUS_INFINITY_DB {
                 MINUS_INFINITY_DB
@@ -1292,18 +1287,10 @@ fn level_section(
                 db + view.offset
             }
         };
-        let (value, displayed) = match mode {
-            LevelMode::Vu => {
-                let live = r.vu.load(Ordering::Relaxed);
-                (live, values.frame.map_or(live, |p| p.channels[index].vu))
-            }
-            _ => {
-                let live = r.ppm_db.load(Ordering::Relaxed);
-                (
-                    convert_ppm(live),
-                    convert_ppm(values.frame.map_or(live, |p| p.channels[index].ppm_db)),
-                )
-            }
+        let sample = values.frame.map(|p| p.channels[index]).unwrap_or_default();
+        let displayed = match mode {
+            LevelMode::Vu => sample.vu,
+            _ => convert_ppm(sample.ppm_db),
         };
         draw_level_bar(
             painter,
@@ -1314,7 +1301,7 @@ fn level_section(
             displayed,
             MINUS_INFINITY_DB,
         );
-        let colour = if value >= view.over_from {
+        let colour = if displayed >= view.over_from {
             theme.over
         } else {
             theme.text
@@ -1322,7 +1309,10 @@ fn level_section(
         group.draw_texts(
             painter,
             bar,
-            [(view.readout(mode, value), colour), (String::new(), colour)],
+            [
+                (view.readout(mode, displayed), colour),
+                (String::new(), colour),
+            ],
             &caption(shared, index),
             theme,
         );
@@ -1444,18 +1434,17 @@ fn loudness_section(
     let zones = view.zones(theme);
     let l = &shared.loudness;
     let bars = [
-        ("M", l.momentary.load(), l.max_momentary.load()),
-        ("S", l.short_term.load(), l.max_short_term.load()),
+        (
+            "M",
+            values.frame.and_then(|p| p.momentary),
+            l.max_momentary.load(),
+        ),
+        (
+            "S",
+            values.frame.and_then(|p| p.short_term),
+            l.max_short_term.load(),
+        ),
     ];
-    let smooth = |index, value| {
-        values.frame.map_or(value, |p| {
-            if index == 0 {
-                p.momentary
-            } else {
-                p.short_term
-            }
-        })
-    };
     for (index, (name, value, max)) in bars.into_iter().enumerate() {
         let bar = group.bar(index);
         draw_level_bar(
@@ -1464,7 +1453,7 @@ fn loudness_section(
             &view.scale,
             theme,
             &zones,
-            view.scale_value(smooth(index, value)),
+            view.scale_value(value),
             view.scale_value(max),
         );
         draw_marker(painter, bar, &view.scale, 0.0, theme.text);
@@ -2035,6 +2024,125 @@ mod tests {
     }
 
     use super::*;
+
+    fn peak_frame(
+        shared: &SharedMeters,
+        frame: Option<&Snapshot>,
+        theme: &Theme,
+    ) -> egui::FullOutput {
+        egui::Context::default().run(Default::default(), |ctx| {
+            let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(240.0, 250.0));
+            let painter = ctx.layer_painter(egui::LayerId::background());
+            peak_section(
+                &painter,
+                rect,
+                MeterValues { shared, frame },
+                theme,
+                1,
+                ShirabeParams::default().target_spec(),
+                Text::new(Lang::English, true),
+            );
+        })
+    }
+
+    #[test]
+    fn peak_hold_uses_the_playout_cursor_while_numeric_maxima_are_live() {
+        use std::sync::Arc;
+
+        let shared = Arc::new(SharedMeters::new());
+        let mut engine =
+            crate::engine::MeterEngine::new(Arc::new(ShirabeParams::default()), shared.clone());
+        engine.prepare(48_000.0, 1, 0);
+        let theme = Theme::dark();
+        let mut playout = Playout::default();
+        let marker = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::LineSegment { points, stroke } if stroke.color == theme.hold => {
+                        Some(points[0].y)
+                    }
+                    _ => None,
+                })
+        };
+        engine.process(&mut [&mut [0.1; 240]], &mut [], false);
+        let quiet = playout.update(&shared, 0.0).unwrap();
+        let quiet_marker = marker(&peak_frame(&shared, Some(&quiet), &theme)).unwrap();
+        engine.process(&mut [&mut [1.0; 240]], &mut [], false);
+        shared
+            .channel(0)
+            .true_peak_max_db
+            .store(0.5, Ordering::Relaxed);
+        let still_quiet = playout.update(&shared, 0.005).unwrap();
+        let output = peak_frame(&shared, Some(&still_quiet), &theme);
+        assert_eq!(marker(&output), Some(quiet_marker), "hold led the bar");
+        for expected in [format_db(0.0), format_db(0.5)] {
+            assert!(
+                output.shapes.iter().any(|clipped| matches!(
+                    &clipped.shape, egui::Shape::Text(t) if t.galley.text() == expected
+                )),
+                "live maximum missing: {expected}"
+            );
+        }
+        let loud = playout.update(&shared, 0.050).unwrap();
+        assert!(marker(&peak_frame(&shared, Some(&loud), &theme)).unwrap() < quiet_marker);
+    }
+
+    #[test]
+    fn a_restart_without_snapshots_does_not_paint_the_live_peak_bar() {
+        let shared = SharedMeters::new();
+        shared.configure(1, 48_000.0, false);
+        let mut playout = Playout::default();
+        shared.timeline.push(Snapshot {
+            frame: 240,
+            ..Default::default()
+        });
+        assert!(playout.update(&shared, 0.0).is_some());
+        shared.timeline.clear();
+        shared.channel(0).level_db.store(-3.0, Ordering::Relaxed);
+        let frame = playout.update(&shared, 0.016);
+        assert!(frame.is_none());
+        let theme = Theme::dark();
+        let output = peak_frame(&shared, frame.as_ref(), &theme);
+        assert!(
+            !output.shapes.iter().any(|clipped| matches!(
+                &clipped.shape, egui::Shape::Rect(r) if theme.zones.iter().any(|z| z.lit == r.fill)
+            )),
+            "the live bar flashed before delayed playback"
+        );
+    }
+
+    #[test]
+    fn instantaneous_readout_colour_follows_the_delayed_level() {
+        let shared = SharedMeters::new();
+        shared.channel(0).vu.store(1.0, Ordering::Relaxed);
+        let mut delayed = Snapshot::default();
+        delayed.channels[0].vu = -5.0;
+        let theme = Theme::dark();
+        let output = egui::Context::default().run(Default::default(), |ctx| {
+            level_section(
+                &ctx.layer_painter(egui::LayerId::background()),
+                Rect::from_min_size(pos2(0.0, 0.0), vec2(240.0, 250.0)),
+                MeterValues {
+                    shared: &shared,
+                    frame: Some(&delayed),
+                },
+                &theme,
+                1,
+                (LevelMode::Vu, false),
+                Text::new(Lang::English, true),
+            );
+        });
+        assert!(
+            output.shapes.iter().any(|clipped| matches!(
+                &clipped.shape,
+                egui::Shape::Text(t) if t.galley.text() == format_db(-5.0)
+                    && t.galley.job.sections[0].format.color == theme.text
+            )),
+            "the readout does not match the delayed bar"
+        );
+    }
 
     #[test]
     fn scope_trace_and_trail_end_at_the_playout_cursor() {

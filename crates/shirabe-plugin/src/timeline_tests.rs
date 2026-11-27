@@ -165,9 +165,10 @@ fn burst_playout_advances_smoothly_at_60_hz() {
                 next_point += INTERVAL;
             }
         }
-        let point = playout
-            .update(&shared, audio_now as f64 / RATE as f64)
-            .unwrap();
+        let Some(point) = playout.update(&shared, audio_now as f64 / RATE as f64) else {
+            assert!(audio_now < RATE / 2, "playout should have started");
+            continue;
+        };
         let raw = ramp_point(delivered).channels[0].vu;
         let played = point.channels[0].vu;
         if let Some((prev_played, prev_raw)) = previous {
@@ -191,6 +192,167 @@ fn burst_playout_advances_smoothly_at_60_hz() {
     );
     assert!(played_jump < 0.075 && raw_jump > 0.5);
     assert!(min_lag >= 0.01 && max_lag <= 0.25);
+}
+
+// The callback delivers the block that just ended; paint starts at a different phase.
+fn measure_playout(block: u64, open: u64, resume: Option<u64>, start: u64) -> (f64, f64, f64) {
+    use crate::playout::Playout;
+    const RATE: u64 = 48_000;
+    const TICK: u64 = RATE / 60;
+    let shared = SharedMeters::new();
+    shared.configure(2, RATE as f32, false);
+    let mut playout = Playout::default();
+    let mut delivered = 0;
+    let mut next_point = RATE / 200;
+    let (mut min_lag, mut max_lag) = (f64::INFINITY, 0.0f64);
+    let (mut total_extra, mut count) = (0.0, 0);
+    for now in (0..start + RATE).step_by(TICK as usize) {
+        while delivered + block <= now {
+            delivered += block;
+            while next_point <= delivered {
+                shared.timeline.push(ramp_point(next_point));
+                next_point += RATE / 200;
+            }
+        }
+        if now < open || resume.is_some_and(|t| (t - RATE..t).contains(&now)) {
+            continue;
+        }
+        let point = playout.update(&shared, now as f64 / RATE as f64);
+        if (start + RATE / 2..start + RATE).contains(&now) {
+            let point = point.expect("playout should already be running");
+            let lag = (now - point.frame) as f64 * 1000.0 / RATE as f64;
+            min_lag = min_lag.min(lag);
+            max_lag = max_lag.max(lag);
+            total_extra += (delivered - point.frame) as f64 * 1000.0 / RATE as f64;
+            count += 1;
+        }
+    }
+    (min_lag, max_lag, total_extra / f64::from(count))
+}
+
+#[test]
+fn full_history_open_settles_to_normal_block_delay_within_half_a_second() {
+    let (min, max, _) = measure_playout(2048, 96_000, None, 96_000);
+    println!("2048-frame blocks, 0.5–1 s after open: {min:.1}–{max:.1} ms");
+    assert!((65.0..=85.0).contains(&min) && max <= 85.0);
+}
+
+#[test]
+fn one_second_stall_does_not_inflate_normal_block_delay() {
+    let (min, max, _) = measure_playout(2048, 96_000, Some(240_000), 240_000);
+    println!("2048-frame blocks, 0.5–1 s after stall: {min:.1}–{max:.1} ms");
+    assert!((65.0..=85.0).contains(&min) && max <= 85.0);
+}
+
+#[test]
+fn a_partial_history_is_not_mistaken_for_one_large_burst() {
+    let (min, max, _) = measure_playout(2048, 8000, None, 8000);
+    assert!(
+        (65.0..=85.0).contains(&min) && max <= 85.0,
+        "{min:.1}–{max:.1} ms"
+    );
+}
+
+#[test]
+fn steady_small_block_delay_at_60_hz() {
+    let (min, max, _) = measure_playout(480, 96_000, None, 288_000);
+    println!("480-frame blocks, steady: {min:.1}–{max:.1} ms");
+    assert!(min >= 38.0 && max <= 52.0);
+}
+
+#[test]
+fn steady_normal_block_delay_at_60_hz() {
+    let (min, max, extra) = measure_playout(2048, 96_000, None, 288_000);
+    println!("2048-frame blocks, steady: {min:.1}–{max:.1} ms; {extra:.1} ms added on average");
+    assert!(min >= 68.0 && max <= 80.0);
+    assert!((45.0..=60.0).contains(&extra));
+}
+
+#[test]
+fn the_first_post_stall_delivery_does_not_jump_to_live_audio() {
+    use crate::playout::Playout;
+    let shared = SharedMeters::new();
+    shared.configure(2, 48_000.0, false);
+    let mut playout = Playout::default();
+    for frame in (240..=1920).step_by(240) {
+        shared.timeline.push(ramp_point(frame));
+    }
+    assert!(playout.update(&shared, 0.0).is_some());
+    assert_eq!(playout.update(&shared, 0.9).unwrap().frame, 1920);
+    shared.timeline.push(ramp_point(2160));
+    assert_eq!(playout.update(&shared, 1.0).unwrap().frame, 1920);
+}
+
+#[test]
+fn a_one_sample_peak_reaches_full_height_within_two_paints_of_playout() {
+    use crate::playout::Playout;
+    const RATE: u64 = 48_000;
+    const BLOCK: u64 = 2048;
+    const TICK: u64 = RATE / 60;
+    const IMPULSE: u64 = BLOCK * 5 + 50;
+    let peak_frame = IMPULSE.div_ceil(RATE / 200) * (RATE / 200);
+    let shared = Arc::new(SharedMeters::new());
+    let mut engine = MeterEngine::new(Arc::new(ShirabeParams::default()), shared.clone());
+    engine.prepare(RATE as f32, 1, 0);
+    let mut playout = Playout::default();
+    let mut delivered = 0;
+    let mut first_paint = None;
+    let mut peak_paint = None;
+    for now in (0..RATE / 2).step_by(TICK as usize) {
+        while delivered + BLOCK <= now {
+            let mut audio = [0.0; BLOCK as usize];
+            if (delivered..delivered + BLOCK).contains(&IMPULSE) {
+                audio[(IMPULSE - delivered) as usize] = 1.0;
+            }
+            engine.process(&mut [&mut audio], &mut [], false);
+            delivered += BLOCK;
+        }
+        let Some(point) = playout.update(&shared, now as f64 / RATE as f64) else {
+            continue;
+        };
+        if point.frame >= peak_frame {
+            first_paint.get_or_insert(now);
+        } else {
+            assert!(
+                point.channels[0].level_db <= -100.0,
+                "peak led its delayed onset"
+            );
+        }
+        if point.channels[0].level_db == 0.0 {
+            peak_paint.get_or_insert(now);
+        }
+    }
+    let first_paint = first_paint.expect("cursor never reached the impulse");
+    let peak_paint = peak_paint.expect("the bar never reached the full 0 dBFS peak");
+    assert!((first_paint..=first_paint + TICK).contains(&peak_paint));
+}
+
+#[test]
+fn fast_offline_bounce_keeps_playout_bounded_and_holds_when_done() {
+    use crate::playout::Playout;
+    use crate::timeline::CAPACITY;
+    const RATE: u64 = 48_000;
+    const POINT: u64 = RATE / 200;
+    let shared = SharedMeters::new();
+    shared.configure(2, RATE as f32, false);
+    let mut playout = Playout::default();
+    shared.timeline.push(ramp_point(POINT));
+    let mut previous = playout.update(&shared, 0.0).unwrap().frame;
+    // Several ring wraps per paint, with far more audio than wall time.
+    let mut index = 1;
+    for tick in 1..=20 {
+        for _ in 0..CAPACITY * 3 {
+            index += 1;
+            shared.timeline.push(ramp_point(index * POINT));
+        }
+        let point = playout.update(&shared, tick as f64 / 60.0).unwrap();
+        assert!((previous..=index * POINT).contains(&point.frame));
+        assert!(index * POINT - point.frame <= RATE / 4);
+        assert!(point.channels[0].vu.is_finite());
+        previous = point.frame;
+    }
+    assert_eq!(playout.update(&shared, 1.0).unwrap().frame, index * POINT);
+    assert_eq!(playout.update(&shared, 2.0).unwrap().frame, index * POINT);
 }
 
 #[test]

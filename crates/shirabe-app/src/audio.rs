@@ -602,14 +602,18 @@ fn find(
     devices.find(matches).or_else(|| default.filter(matches))
 }
 
-/// Requests a period of about 10 ms only within the device's advertised buffer range.
+/// Requests an ALSA period of about 10 ms only within the advertised buffer range.
 fn preferred_input_frames(rate: u32, supported: &SupportedBufferSize, alsa: bool) -> Option<u32> {
+    // CoreAudio's Fixed changes the device buffer for other applications, and Fixed has
+    // not been verified for WASAPI shared mode. Leave all non-ALSA hosts on Default.
+    if !alsa {
+        return None;
+    }
     let &SupportedBufferSize::Range { min, max } = supported else {
         return None;
     };
     // cpal's ALSA backend uses Fixed(v) for the entire buffer and v/4 for the period.
-    let period = ((rate + 50) / 100).max(1);
-    let frames = if alsa { period * 4 } else { period };
+    let frames = ((rate + 50) / 100).max(1) * 4;
     (min..=max).contains(&frames).then_some(frames)
 }
 
@@ -656,9 +660,9 @@ mod tests {
     use shirabe_plugin::shared::SharedMeters;
 
     #[test]
-    fn requests_ten_ms_period_only_when_supported() {
+    fn requests_ten_ms_period_only_for_supported_alsa_devices() {
         let range = SupportedBufferSize::Range { min: 64, max: 4096 };
-        assert_eq!(preferred_input_frames(48_000, &range, false), Some(480));
+        assert_eq!(preferred_input_frames(48_000, &range, false), None);
         assert_eq!(preferred_input_frames(44_100, &range, true), Some(1764));
         assert_eq!(
             preferred_input_frames(48_000, &SupportedBufferSize::Unknown, false),

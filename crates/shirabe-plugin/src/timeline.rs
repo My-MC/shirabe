@@ -8,11 +8,13 @@ use crate::shared::MAX_CHANNELS;
 
 /// More than one second of history at the nominal 200 Hz cadence.
 pub(crate) const CAPACITY: usize = 256;
-const VALUES: usize = MAX_CHANNELS * 3 + 4;
+const CHANNEL_VALUES: usize = 4;
+const VALUES: usize = MAX_CHANNELS * CHANNEL_VALUES + 4;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ChannelSample {
     pub level_db: f32,
+    pub hold_db: f32,
     pub vu: f32,
     pub ppm_db: f32,
 }
@@ -21,6 +23,7 @@ impl Default for ChannelSample {
     fn default() -> Self {
         Self {
             level_db: MINUS_INFINITY_DB,
+            hold_db: MINUS_INFINITY_DB,
             vu: MINUS_INFINITY_DB,
             ppm_db: MINUS_INFINITY_DB,
         }
@@ -63,15 +66,17 @@ impl Slot {
         fence(Release);
         self.frame.store(point.frame, Relaxed);
         self.scope_epoch.store(point.scope_epoch, Relaxed);
-        for (values, channel) in self.values.chunks_exact(3).zip(point.channels) {
-            for (word, value) in values
-                .iter()
-                .zip([channel.level_db, channel.vu, channel.ppm_db])
-            {
+        for (values, channel) in self.values.chunks_exact(CHANNEL_VALUES).zip(point.channels) {
+            for (word, value) in values.iter().zip([
+                channel.level_db,
+                channel.hold_db,
+                channel.vu,
+                channel.ppm_db,
+            ]) {
                 word.store(value.to_bits(), Relaxed);
             }
         }
-        for (word, value) in self.values[MAX_CHANNELS * 3..].iter().zip([
+        for (word, value) in self.values[MAX_CHANNELS * CHANNEL_VALUES..].iter().zip([
             point.momentary,
             point.short_term,
             point.correlation,
@@ -88,16 +93,17 @@ impl Slot {
         }
         let load = |i: usize| f32::from_bits(self.values[i].load(Relaxed));
         let optional = |i| {
-            let value = load(MAX_CHANNELS * 3 + i);
+            let value = load(MAX_CHANNELS * CHANNEL_VALUES + i);
             (!value.is_nan()).then_some(value)
         };
         let point = Snapshot {
             frame: self.frame.load(Relaxed),
             scope_epoch: self.scope_epoch.load(Relaxed),
             channels: std::array::from_fn(|i| ChannelSample {
-                level_db: load(i * 3),
-                vu: load(i * 3 + 1),
-                ppm_db: load(i * 3 + 2),
+                level_db: load(i * CHANNEL_VALUES),
+                hold_db: load(i * CHANNEL_VALUES + 1),
+                vu: load(i * CHANNEL_VALUES + 2),
+                ppm_db: load(i * CHANNEL_VALUES + 3),
             }),
             momentary: optional(0),
             short_term: optional(1),

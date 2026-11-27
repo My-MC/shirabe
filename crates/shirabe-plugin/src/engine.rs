@@ -434,6 +434,7 @@ impl MeterEngine {
             peak.process_peak(self.pending_peak[index], self.display_interval);
             let mut channel = ChannelSample {
                 level_db: peak.level_db(),
+                hold_db: peak.hold_db(),
                 ..ChannelSample::default()
             };
             match self.level_mode {
