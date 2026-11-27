@@ -392,3 +392,71 @@ fn timeline_wrap_keeps_only_complete_newest_points() {
     timeline.push(ramp_point(240));
     assert_eq!(timeline.points_for_test(), [ramp_point(240)]);
 }
+
+#[test]
+fn spectrum_follows_every_steady_burst_paint_at_the_needle_frame() {
+    use crate::{editor::SpectrumView, playout::Playout};
+    use shirabe_dsp::spectrum::SpectrumAnalyzer;
+    const RATE: u64 = 48_000;
+    const BLOCK: usize = 8192;
+    const PAINT: usize = RATE as usize / 60;
+    let shared = Arc::new(SharedMeters::new());
+    let mut engine = MeterEngine::new(Arc::new(ShirabeParams::default()), shared.clone());
+    engine.prepare(RATE as f32, 1, 0);
+    let mut playout = Playout::default();
+    let mut view = SpectrumView::new();
+    let mut delivered = 0;
+    let mut counts = [0; 3];
+    let mut input = [0.0; BLOCK];
+    for now in (0..4 * RATE as usize).step_by(PAINT) {
+        if delivered <= now {
+            for (i, sample) in input.iter_mut().enumerate() {
+                let frame = delivered + i;
+                let frequency = if frame < 2 * RATE as usize {
+                    1001.953125
+                } else {
+                    3000.0
+                };
+                *sample =
+                    (std::f64::consts::TAU * frame as f64 * frequency / RATE as f64).sin() as f32;
+            }
+            assert_no_alloc::assert_no_alloc(|| engine.process(&mut [&mut input], &mut [], false));
+            delivered += BLOCK;
+        }
+        let point = playout.update(&shared, now as f64 / RATE as f64);
+        let previous = view.analyzer().analyzed_frames();
+        view.update(&shared, point.as_ref());
+        assert!(view.analyzer().analyzed_frames() <= previous + 1);
+        if now >= RATE as usize {
+            let point = point.unwrap();
+            assert_eq!(
+                view.analyzer().analyzed_frames(),
+                previous + 1,
+                "paint at {now}"
+            );
+            assert_eq!(view.analyzer().analyzed_end(), Some(point.frame));
+            counts[now / RATE as usize - 1] += 1;
+            if delivered > 2 * RATE as usize && point.frame <= 2 * RATE {
+                // Newest input already contains the higher tone, but the needles and FFT don't.
+                assert!(view.analyzer().peak().unwrap().0 < 1100.0);
+            }
+        }
+    }
+    println!("analyses/s after warm-up: {counts:?}");
+    assert_eq!(counts, [60; 3]);
+
+    // Reset keeps the needle frame coordinate but starts a new spectrum epoch and window.
+    shared.request_reset();
+    engine.process(&mut [&mut input], &mut [], false);
+    let point = shared.timeline.points_for_test().pop().unwrap();
+    view.update(&shared, Some(&point));
+    assert!(!view.analyzer().is_ready());
+    engine.process(&mut [&mut input], &mut [], false);
+    let point = shared.timeline.points_for_test().pop().unwrap();
+    view.update(&shared, Some(&point));
+    assert_eq!(view.analyzer().analyzed_end(), Some(point.frame));
+    // The raw analyser agrees when it reads the exact same window for its first analysis.
+    let mut expected = SpectrumAnalyzer::new(RATE as f32);
+    assert!(expected.analyze_at(&shared.spectrum, point.frame, point.spectrum_epoch));
+    assert_eq!(view.analyzer().bins_db(), expected.bins_db());
+}

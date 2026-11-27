@@ -298,7 +298,6 @@ impl SharedMeters {
         self.stereo.clear();
         self.clear_display_capture();
         self.history.clear();
-        self.spectrum.clear();
     }
 
     /// Discards delayed display data at a source change, without clearing measured values.
@@ -306,6 +305,7 @@ impl SharedMeters {
     pub fn clear_display_capture(&self) {
         self.timeline.clear();
         self.scope.clear();
+        self.spectrum.clear();
     }
 
     /// Read-outs of channel `index` (must be below [`MAX_CHANNELS`]).

@@ -69,13 +69,7 @@ fn analyse_bands(
     warmup_seconds: f32,
 ) -> Option<[f32; BAND_COUNT]> {
     let capture = SpectrumCapture::new();
-    let mut analyzer = SpectrumAnalyzer::new(
-        sample_rate,
-        SpectrumConfig {
-            smoothing_seconds: 0.5,
-            ..SpectrumConfig::default()
-        },
-    );
+    let mut analyzer = SpectrumAnalyzer::new(sample_rate);
     let hop = FFT_SIZE / 2;
     let mut result = None;
     for (block_index, chunk) in samples.chunks(hop).enumerate() {
@@ -131,8 +125,9 @@ fn bands_follow_the_base_ten_one_third_octave_series() {
 fn a_bin_centred_sine_reads_its_frequency_and_level_at_several_rates() {
     for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
         for target in [100.0f32, 1_000.0, 10_000.0] {
-            let bin = (target * FFT_SIZE as f32 / sample_rate).round().max(1.0);
-            let frequency = bin * sample_rate / FFT_SIZE as f32;
+            let size = SpectrumAnalyzer::new(sample_rate).fft_size();
+            let bin = (target * size as f32 / sample_rate).round().max(1.0);
+            let frequency = bin * sample_rate / size as f32;
             if frequency >= sample_rate / 2.0 {
                 continue;
             }
@@ -141,13 +136,13 @@ fn a_bin_centred_sine_reads_its_frequency_and_level_at_several_rates() {
                 let signal = sine(frequency, sample_rate, amplitude, 0.8);
                 let capture = SpectrumCapture::new();
                 push_blocks(&capture, &signal, 256);
-                let mut analyzer = SpectrumAnalyzer::new(sample_rate, SpectrumConfig::default());
+                let mut analyzer = SpectrumAnalyzer::new(sample_rate);
                 assert!(
                     analyzer.analyze(&capture),
                     "{sample_rate} Hz {frequency} Hz"
                 );
                 let (peak_hz, peak_db) = analyzer.peak().expect("a peak");
-                let bin_hz = sample_rate / FFT_SIZE as f32;
+                let bin_hz = sample_rate / size as f32;
                 assert!(
                     (peak_hz - frequency).abs() <= bin_hz,
                     "{peak_hz} vs {frequency} at {sample_rate}"
@@ -169,7 +164,7 @@ fn an_off_bin_sine_stays_within_one_bin_and_the_hann_scalloping_loss() {
     let signal = sine(frequency, sample_rate, 1.0, 0.8);
     let capture = SpectrumCapture::new();
     push_blocks(&capture, &signal, 256);
-    let mut analyzer = SpectrumAnalyzer::new(sample_rate, SpectrumConfig::default());
+    let mut analyzer = SpectrumAnalyzer::new(sample_rate);
     assert!(analyzer.analyze(&capture));
     let (peak_hz, peak_db) = analyzer.peak().expect("a peak");
     let bin_hz = sample_rate / FFT_SIZE as f32;
@@ -187,7 +182,7 @@ fn the_window_normalisation_puts_a_full_scale_sine_at_zero_dbfs() {
         let signal = sine(frequency, sample_rate, amplitude, 0.8);
         let capture = SpectrumCapture::new();
         push_blocks(&capture, &signal, 256);
-        let mut analyzer = SpectrumAnalyzer::new(sample_rate, SpectrumConfig::default());
+        let mut analyzer = SpectrumAnalyzer::new(sample_rate);
         assert!(analyzer.analyze(&capture));
         let (_, peak_db) = analyzer.peak().expect("a peak");
         assert!(
@@ -239,7 +234,7 @@ fn a_full_scale_sine_reads_zero_db_in_its_band() {
     let signal = sine(1000.0, sample_rate, 1.0, 0.8);
     let capture = SpectrumCapture::new();
     push_blocks(&capture, &signal, 256);
-    let mut analyzer = SpectrumAnalyzer::new(sample_rate, SpectrumConfig::default());
+    let mut analyzer = SpectrumAnalyzer::new(sample_rate);
     assert!(analyzer.analyze(&capture));
     let bands = analyzer.bands_db();
     let level = bands[band_index("1k")];
@@ -252,7 +247,7 @@ fn bands_above_the_nyquist_frequency_read_the_floor() {
     // At 32 kHz the 16 kHz band reaches Nyquist and the 20 kHz band has no bins at all.
     let capture = SpectrumCapture::new();
     push_blocks(&capture, &white_noise(3, 40_000), 512);
-    let mut analyzer = SpectrumAnalyzer::new(32_000.0, SpectrumConfig::default());
+    let mut analyzer = SpectrumAnalyzer::new(32_000.0);
     assert!(analyzer.analyze(&capture));
     assert_eq!(analyzer.bands_db()[band_index("20k")], -150.0);
     // The 16 kHz band is cut off at Nyquist but still holds the bins below it.
@@ -273,7 +268,7 @@ fn the_capture_ring_keeps_the_newest_frames_in_order_and_counts_clears() {
     assert_eq!(capture.read_latest(&mut out), 4);
     assert_eq!(out, [6.0, 7.0, 8.0, 9.0]);
     capture.clear();
-    assert_eq!(capture.epoch(), 1);
+    assert_eq!(capture.epoch(), 2);
     assert_eq!(capture.written(), 0);
     assert_eq!(capture.read_latest(&mut out), 0);
 }
@@ -283,7 +278,7 @@ fn a_clear_resets_the_analysis_instead_of_keeping_the_old_window() {
     let sample_rate = 48_000.0;
     let capture = SpectrumCapture::new();
     push_blocks(&capture, &sine(1000.0, sample_rate, 0.5, 0.8), 256);
-    let mut analyzer = SpectrumAnalyzer::new(sample_rate, SpectrumConfig::default());
+    let mut analyzer = SpectrumAnalyzer::new(sample_rate);
     assert!(analyzer.analyze(&capture));
     assert!(analyzer.is_ready());
 
@@ -299,17 +294,17 @@ fn a_clear_resets_the_analysis_instead_of_keeping_the_old_window() {
 }
 
 #[test]
-fn the_hop_limits_analyses_to_half_a_window_of_new_audio() {
+fn the_hop_limits_analyses_to_five_ms_of_new_audio() {
     let sample_rate = 48_000.0;
     let capture = SpectrumCapture::new();
-    let mut analyzer = SpectrumAnalyzer::new(sample_rate, SpectrumConfig::default());
+    let mut analyzer = SpectrumAnalyzer::new(sample_rate);
     capture.push(&vec![0.1; FFT_SIZE]);
     assert!(analyzer.analyze(&capture));
     assert_eq!(analyzer.analyzed_frames(), 1);
     // No new audio: no new analysis.
     assert!(!analyzer.analyze(&capture));
     // Less than one hop: still no new analysis.
-    capture.push(&vec![0.1; FFT_SIZE / 2 - 1]);
+    capture.push(&vec![0.1; 239]);
     assert!(!analyzer.analyze(&capture));
     capture.push(&[0.1]);
     assert!(analyzer.analyze(&capture));
@@ -326,4 +321,141 @@ fn mono_sum_keeps_a_dual_mono_signal_at_its_level_and_halves_a_single_side() {
     let silent = [0.0f32; 4];
     mono_sum(&left, &silent, &mut out);
     assert_eq!(out, [0.25, -0.125, 0.5, 0.0]);
+}
+
+#[test]
+fn display_window_scales_with_rate() {
+    for (rate, size) in [
+        (44_100., 8192),
+        (48_000., 8192),
+        (88_200., 16384),
+        (96_000., 16384),
+        (176_400., 32768),
+        (192_000., 32768),
+    ] {
+        assert_eq!(SpectrumAnalyzer::new(rate).fft_size(), size);
+    }
+}
+
+#[test]
+fn a_tone_onset_reaches_steady_state_by_two_paints() {
+    let rate = 48_000.0;
+    let capture = SpectrumCapture::new();
+    let mut analyzer = SpectrumAnalyzer::new(rate);
+    let bin = 171;
+    let signal = sine(analyzer.bin_hz(bin), rate, 1.0, 1.0);
+    capture.push(&vec![0.0; analyzer.fft_size()]);
+    assert!(analyzer.analyze(&capture));
+    for (paint, samples) in signal[..1600].chunks(800).enumerate() {
+        capture.push(samples);
+        assert!(analyzer.analyze(&capture));
+        let (fft, rta) = (analyzer.bins_db()[bin], analyzer.bands_db()[17]);
+        println!("paint {}: FFT {fft:.3} dBFS; RTA {rta:.3} dBFS", paint + 1);
+        if paint == 1 {
+            assert!(fft.abs() < 1.0 && rta.abs() < 1.0);
+        }
+    }
+}
+
+fn after_tone() -> (SpectrumCapture, SpectrumAnalyzer) {
+    let rate = 48_000.0;
+    let capture = SpectrumCapture::new();
+    let mut analyzer = SpectrumAnalyzer::new(rate);
+    capture.push(&sine(analyzer.bin_hz(171), rate, 1.0, 1.0));
+    assert!(analyzer.analyze(&capture));
+    (capture, analyzer)
+}
+
+fn advance_silence(capture: &SpectrumCapture, analyzer: &mut SpectrumAnalyzer, paints: usize) {
+    for _ in 0..paints {
+        capture.push(&[0.0; 800]);
+        assert!(analyzer.analyze(capture));
+    }
+}
+
+#[test]
+fn release_falls_about_25_db_per_second_into_silence() {
+    let (capture, mut analyzer) = after_tone();
+    advance_silence(&capture, &mut analyzer, 2);
+    let start = [analyzer.bins_db()[171], analyzer.bands_db()[17]];
+    advance_silence(&capture, &mut analyzer, 12);
+    for (a, b) in start
+        .into_iter()
+        .zip([analyzer.bins_db()[171], analyzer.bands_db()[17]])
+    {
+        let slope = (a - b) / 0.2;
+        println!("release: {slope:.3} dB/s");
+        assert!((slope - 25.0).abs() < 0.1);
+    }
+}
+
+#[test]
+fn peaks_hold_for_1_25_seconds_then_release() {
+    let (capture, mut analyzer) = after_tone();
+    advance_silence(&capture, &mut analyzer, 75);
+    assert!(analyzer.bin_peaks_db()[171].abs() < 0.01);
+    assert!(analyzer.band_peaks_db()[17].abs() < 0.01);
+    advance_silence(&capture, &mut analyzer, 12);
+    for peak in [analyzer.bin_peaks_db()[171], analyzer.band_peaks_db()[17]] {
+        println!("held peak 200 ms after expiry: {peak:.3} dBFS");
+        assert!((peak + 5.0).abs() < 0.02);
+    }
+    capture.clear();
+    assert!(!analyzer.analyze(&capture));
+    assert_eq!(analyzer.bin_peaks_db()[171], -150.0);
+    assert_eq!(analyzer.band_peaks_db()[17], -150.0);
+}
+
+#[test]
+fn a_delayed_window_survives_maximum_playout_delay_at_192_khz() {
+    let capture = SpectrumCapture::new();
+    let start = 200_000;
+    capture.clear_at(start);
+    let samples: Vec<f32> = (0..(SPECTRUM_CAPACITY + 777)).map(|i| i as f32).collect();
+    push_blocks(&capture, &samples, 256);
+    let end = start + samples.len() as u64 - 48_000;
+    let mut out = vec![0.0; 32_768];
+    let first = (end - start) as usize - out.len();
+    let epoch = capture.epoch();
+    assert!(capture.read_ending_at(end, epoch, &mut out));
+    assert_eq!(out, samples[first..first + out.len()]);
+    assert!(!capture.read_ending_at(start + out.len() as u64, epoch, &mut out));
+    assert!(!capture.read_ending_at(start + samples.len() as u64 + 1, epoch, &mut out));
+    capture.clear_at(end);
+    assert!(!capture.read_ending_at(end, epoch, &mut out));
+}
+
+#[test]
+#[ignore = "manual release-mode CPU benchmark"]
+fn spectrum_analysis_cpu_budget() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    for rate in [48_000.0, 192_000.0] {
+        let capture = SpectrumCapture::new();
+        let mut analyzer = SpectrumAnalyzer::new(rate);
+        let chunk = (rate / 60.0) as usize;
+        let delay = (rate * 0.25) as u64;
+        let signal = pink_noise(11, analyzer.fft_size() + delay as usize + chunk);
+        push_blocks(&capture, &signal, 256);
+        let mut timings = Vec::with_capacity(1000);
+        for i in 0..1050 {
+            push_blocks(&capture, &signal[..chunk], 256);
+            let end = capture.written() - delay;
+            let epoch = capture.epoch();
+            let start = Instant::now();
+            assert!(black_box(&mut analyzer).analyze_at(black_box(&capture), end, epoch));
+            let elapsed = start.elapsed();
+            if i >= 50 {
+                timings.push(elapsed.as_secs_f64() * 1e3);
+            }
+        }
+        timings.sort_by(f64::total_cmp);
+        println!(
+            "{rate:.0} Hz ({} points): median {:.3} ms; p95 {:.3} ms; max {:.3} ms",
+            analyzer.fft_size(),
+            timings[500],
+            timings[949],
+            timings[999]
+        );
+    }
 }

@@ -8,9 +8,9 @@
 //! bars aggregate FFT bins; they are not class 1 or class 2 band-pass filters (see
 //! `docs/standards.md`).
 
-use shirabe_dsp::spectrum::{band_edges_hz, BAND_COUNT, NOMINAL_LABELS};
+use shirabe_dsp::spectrum::{band_edges_hz, BAND_COUNT};
 
-use crate::egui::{pos2, Align2, Color32, FontId, Painter, Rect, Stroke};
+use crate::egui::{pos2, Align2, Color32, FontId, Mesh, Painter, Pos2, Rect, Shape, Stroke};
 use crate::i18n::Text;
 use crate::theme::Theme;
 
@@ -36,7 +36,7 @@ pub const MAX_HZ: f32 = 20_000.0;
 /// Which spectrum display the tile shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// One line per FFT bin.
+    /// Interpolated FFT curve.
     Fft,
     /// One bar per 1/3-octave band.
     Rta,
@@ -48,12 +48,16 @@ pub struct SpectrumRender<'a> {
     pub mode: Mode,
     /// Per-bin levels in dBFS (index 0 is DC).
     pub bins_db: &'a [f32],
+    /// Peak-hold trace in dBFS on the same bin grid.
+    pub bin_peaks_db: &'a [f32],
     /// Sample rate of the analysed signal in Hz.
     pub sample_rate: f32,
     /// FFT length in samples.
     pub fft_size: usize,
     /// Per-band levels in dBFS, low to high.
     pub bands_db: &'a [f32; BAND_COUNT],
+    /// Peak-hold ticks in dBFS on the same band grid.
+    pub band_peaks_db: &'a [f32; BAND_COUNT],
     /// Strongest bin as `(frequency_hz, level_db)`.
     pub peak: Option<(f32, f32)>,
     /// Whether a window has been analysed since the last reset.
@@ -205,69 +209,142 @@ pub fn draw(painter: &Painter, rect: Rect, render: &SpectrumRender<'_>, theme: &
         return;
     }
 
+    let plot_painter = painter.with_clip_rect(plot);
     match render.mode {
-        Mode::Fft => draw_fft(painter, plot, render),
-        Mode::Rta => draw_rta(painter, plot, render, theme),
+        Mode::Fft => draw_fft(&plot_painter, plot, render, theme),
+        Mode::Rta => draw_rta(&plot_painter, plot, render, theme),
     }
 }
 
-fn draw_fft(painter: &Painter, plot: Rect, render: &SpectrumRender<'_>) {
+fn draw_fft(painter: &Painter, plot: Rect, render: &SpectrumRender<'_>, theme: &Theme) {
     if render.bins_db.len() < 2 || render.fft_size == 0 || render.sample_rate <= 0.0 {
         return;
     }
-    let width = plot.width().max(1.0) as usize;
-    let bins = render.bins_db.len();
-    let nyquist = render.sample_rate / 2.0;
-    let displayed_hz = MAX_HZ.min(nyquist);
-    let max_bin = (((displayed_hz / render.sample_rate) * render.fft_size as f32).floor() as usize)
-        .min(bins - 1);
-    let decades = MAX_HZ / MIN_HZ;
-    // One point per pixel column over the logarithmic axis, keeping the strongest bin in the
-    // column so a narrow peak between two columns stays visible.
-    let mut points = Vec::with_capacity(width);
-    for column in 0..width {
-        let x = plot.left() + (column as f32 + 0.5) / width as f32 * plot.width();
-        let low_hz = MIN_HZ * decades.powf(column as f32 / width as f32);
-        if low_hz >= displayed_hz {
-            points.push(pos2(x, plot.bottom()));
-            continue;
-        }
-        let high_hz = MIN_HZ * decades.powf((column + 1) as f32 / width as f32);
-        let first = ((low_hz / render.sample_rate) * render.fft_size as f32).floor() as usize;
-        let last = (((high_hz / render.sample_rate) * render.fft_size as f32).ceil() as usize)
-            .clamp(first + 1, max_bin + 1);
-        let mut best = FLOOR_DB;
-        for &db in &render.bins_db[first..last] {
-            if db > best {
-                best = db;
-            }
-        }
-        points.push(pos2(x, level_y(plot, best.clamp(FLOOR_DB, CEILING_DB))));
+    let columns = (plot.width() * painter.ctx().pixels_per_point()).ceil() as usize;
+    let bin_hz = render.sample_rate / render.fft_size as f32;
+    let points = fft_points(render.bins_db, bin_hz, plot, columns);
+    let peaks = fft_points(render.bin_peaks_db, bin_hz, plot, columns);
+    if points.len() < 2 {
+        return;
     }
-    let colour = Color32::from_rgb(0x4a, 0x9c, 0xd8);
-    painter.add(crate::egui::Shape::line(
-        points,
-        Stroke::new(1.2_f32, colour),
-    ));
+
+    let accent = theme.on_target;
+    let fill_top = accent.gamma_multiply(0.39);
+    let fill_bottom = accent.gamma_multiply(0.07);
+    let mut fill = Mesh::default();
+    fill.reserve_vertices(points.len() * 2);
+    fill.reserve_triangles((points.len() - 1) * 2);
+    for (i, point) in points.iter().copied().enumerate() {
+        let v = (2 * i) as u32;
+        fill.colored_vertex(point, fill_top);
+        fill.colored_vertex(pos2(point.x, plot.bottom()), fill_bottom);
+        if i > 0 {
+            fill.add_triangle(v - 2, v - 1, v);
+            fill.add_triangle(v, v - 1, v + 1);
+        }
+    }
+    painter.add(Shape::mesh(fill));
+    if peaks.len() > 1 {
+        painter.add(Shape::line(
+            peaks,
+            Stroke::new(0.8_f32, theme.hold.gamma_multiply(0.36)),
+        ));
+    }
+    painter.add(Shape::line(points, Stroke::new(1.6_f32, accent)));
+}
+
+fn fft_points(bins: &[f32], bin_hz: f32, plot: Rect, columns: usize) -> Vec<Pos2> {
+    if bins.len() < 2 {
+        return Vec::new();
+    }
+    let last_hz = MAX_HZ.min((bins.len() - 1) as f32 * bin_hz);
+    if last_hz <= MIN_HZ {
+        return Vec::new();
+    }
+    let nyquist_x = log_x(plot, last_hz);
+    let mut points = Vec::with_capacity(columns + 2);
+    let mut low = MIN_HZ;
+    for column in 0..columns {
+        let fraction = (column + 1) as f32 / columns as f32;
+        let high = (MIN_HZ * (MAX_HZ / MIN_HZ).powf(fraction)).min(last_hz);
+        let db = column_level(bins, low / bin_hz, high / bin_hz);
+        let x = if high == last_hz {
+            (log_x(plot, low) + nyquist_x) * 0.5
+        } else {
+            plot.left() + (column as f32 + 0.5) / columns as f32 * plot.width()
+        };
+        points.push(pos2(x, level_y(plot, db)));
+        if high == last_hz {
+            break;
+        }
+        low = high;
+    }
+    if let (Some(first), Some(last)) = (points.first().copied(), points.last().copied()) {
+        points.insert(0, pos2(plot.left(), first.y));
+        points.push(pos2(nyquist_x, last.y));
+    }
+    points
+}
+
+/// Bounds in fractional bins. When zoomed in, sample the line connecting the bin centres on
+/// the log axis. When zoomed out, only take the max of bin centres inside this column.
+fn column_level(bins: &[f32], low: f32, high: f32) -> f32 {
+    let first = low.ceil() as usize;
+    let last = (high.floor() as usize).min(bins.len() - 1);
+    if high - low >= 1.0 && first <= last {
+        return bins[first..=last].iter().copied().fold(FLOOR_DB, f32::max);
+    }
+    let centre = (low * high).sqrt().min((bins.len() - 1) as f32);
+    let lower = centre.floor() as usize;
+    let upper = (lower + 1).min(bins.len() - 1);
+    let t = if lower == 0 || lower == upper {
+        centre - lower as f32
+    } else {
+        (centre / lower as f32).ln() / (upper as f32 / lower as f32).ln()
+    };
+    let a = bins[lower].max(FLOOR_DB);
+    let b = bins[upper].max(FLOOR_DB);
+    a + (b - a) * t
 }
 
 fn draw_rta(painter: &Painter, plot: Rect, render: &SpectrumRender<'_>, theme: &Theme) {
-    for (index, &db) in render.bands_db.iter().enumerate() {
+    let hold = Stroke::new(1.0_f32, theme.hold.gamma_multiply(0.56));
+    for (index, (&db, &peak)) in render.bands_db.iter().zip(render.band_peaks_db).enumerate() {
         let rect = band_rect(plot, index);
-        let top = level_y(plot, db.clamp(FLOOR_DB, CEILING_DB));
-        let bar = Rect::from_min_max(pos2(rect.left(), top), rect.max);
+        let bar = Rect::from_min_max(pos2(rect.left(), level_y(plot, db)), rect.max);
         if bar.height() > 0.0 {
             painter.rect_filled(bar, 1.0, theme.zone_at(db).lit);
         }
-        // Label a few bands so a narrow tile does not fill up with numbers.
-        if matches!(index, 2 | 7 | 12 | 17 | 22 | 27) {
-            painter.text(
-                pos2(rect.center().x, plot.bottom() + 2.0),
-                Align2::CENTER_TOP,
-                NOMINAL_LABELS[index],
-                FontId::proportional(8.0),
-                theme.text_dim,
-            );
+        if peak > FLOOR_DB {
+            let y = level_y(plot, peak);
+            painter.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], hold);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fractional_columns_follow_a_monotone_slope_between_bin_centres() {
+        let bins = [-90.0, -90.0, -80.0, -20.0, -90.0];
+        let samples: Vec<_> = (0..10)
+            .map(|i| {
+                let lo = 2.0 + i as f32 * 0.1;
+                let hi = lo + 0.1;
+                column_level(&bins, lo, hi)
+            })
+            .collect();
+        assert!(samples.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(samples[0] > -80.0 && samples[9] < -20.0);
+        assert!((column_level(&bins, 2.4, 2.5) - (-50.0)).abs() < 0.5);
+    }
+
+    #[test]
+    fn a_wide_column_keeps_the_narrow_peak_without_bleeding_into_its_neighbour() {
+        let bins = [-90.0, -90.0, -90.0, -3.0, -90.0, -90.0, -90.0];
+        assert_eq!(column_level(&bins, 1.4, 3.4), -3.0);
+        assert_eq!(column_level(&bins, 3.4, 5.4), -90.0);
     }
 }

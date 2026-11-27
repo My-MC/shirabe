@@ -11,7 +11,7 @@ use std::sync::Arc;
 use nih_plug::prelude::*;
 use nih_plug_egui::{create_egui_editor, resizable_window::ResizableWindow, widgets};
 use shirabe_dsp::history::{HISTORY_CAPACITY, HISTORY_INTERVAL_SECONDS};
-use shirabe_dsp::spectrum::{SpectrumAnalyzer, SpectrumConfig};
+use shirabe_dsp::spectrum::SpectrumAnalyzer;
 use shirabe_dsp::MINUS_INFINITY_DB;
 use shirabe_ui::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Painter, Rect, RichText, Sense,
@@ -682,14 +682,18 @@ fn tile_history(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
 }
 
 fn tile_spectrum(ctx: &mut MeterCtx<'_>, painter: &Painter, rect: Rect) {
-    ctx.spectrum.update(ctx.shared);
+    if spectrum_tile::plot_rect(rect).is_some() {
+        ctx.spectrum.update(ctx.shared, ctx.values.frame);
+    }
     let analyzer = ctx.spectrum.analyzer();
     let render = SpectrumRender {
         mode: ctx.params.spectrum_mode.value().display(),
         bins_db: analyzer.bins_db(),
+        bin_peaks_db: analyzer.bin_peaks_db(),
         sample_rate: analyzer.sample_rate(),
         fft_size: analyzer.fft_size(),
         bands_db: analyzer.bands_db(),
+        band_peaks_db: analyzer.band_peaks_db(),
         peak: analyzer.peak(),
         ready: analyzer.is_ready(),
         text: ctx.text,
@@ -752,19 +756,24 @@ impl SpectrumView {
     pub fn new() -> Self {
         let sample_rate = 48_000.0;
         Self {
-            analyzer: SpectrumAnalyzer::new(sample_rate, SpectrumConfig::default()),
+            analyzer: SpectrumAnalyzer::new(sample_rate),
             sample_rate,
         }
     }
 
-    /// Consumes any new captured audio, ready for [`Self::analyzer`] this frame.
-    pub fn update(&mut self, shared: &SharedMeters) {
+    /// Consumes the window at the same frame as the other instantaneous meters.
+    pub(crate) fn update(&mut self, shared: &SharedMeters, frame: Option<&Snapshot>) {
         let rate = shared.sample_rate();
         if rate > 0.0 && (rate - self.sample_rate).abs() > 0.5 {
-            self.analyzer = SpectrumAnalyzer::new(rate, SpectrumConfig::default());
+            self.analyzer = SpectrumAnalyzer::new(rate);
             self.sample_rate = rate;
         }
-        self.analyzer.analyze(&shared.spectrum);
+        if let Some(point) = frame {
+            self.analyzer
+                .analyze_at(&shared.spectrum, point.frame, point.spectrum_epoch);
+        } else if self.analyzer.is_ready() {
+            self.analyzer.reset();
+        }
     }
 
     /// The analyser holding the values drawn this frame.

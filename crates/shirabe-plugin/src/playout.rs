@@ -192,6 +192,7 @@ fn interpolate(a: Snapshot, b: Snapshot, t: f32, frame: u64) -> Snapshot {
     Snapshot {
         frame,
         scope_epoch: a.scope_epoch,
+        spectrum_epoch: a.spectrum_epoch,
         channels: std::array::from_fn(|i| ChannelSample {
             level_db: release_only(a.channels[i].level_db, b.channels[i].level_db),
             hold_db: release_only(a.channels[i].hold_db, b.channels[i].hold_db),

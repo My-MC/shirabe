@@ -201,7 +201,7 @@ impl MeterEngine {
         self.shared.history.clear();
         self.shared.timeline.clear();
         // The spectrum is display-only but shows the same programme, so Reset clears it too.
-        self.shared.spectrum.clear();
+        self.shared.spectrum.clear_at(self.display_frame);
     }
 
     /// Measures one block. `channels` holds one slice per channel, all of the same length.
@@ -245,7 +245,6 @@ impl MeterEngine {
         // fixed scratch block, so the audio thread neither locks nor allocates.
         if channels.len() != self.spectrum_channels {
             // A layout change must not leave frames from the previous input in the display.
-            self.shared.spectrum.clear();
             self.shared.clear_display_capture();
             self.restart_capture();
             self.spectrum_channels = channels.len();
@@ -423,6 +422,7 @@ impl MeterEngine {
         let mut point = Snapshot {
             frame: self.display_frame,
             scope_epoch: self.shared.scope.epoch(),
+            spectrum_epoch: self.shared.spectrum.epoch(),
             momentary: loudness.momentary.map(|x| x as f32),
             short_term: loudness.short_term.map(|x| x as f32),
             correlation: stereo.correlation,

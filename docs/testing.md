@@ -359,21 +359,41 @@ FFT 表示と 1/3 oct 表示を切り替え、ピークとバンドが周波数�
 | 640×440 に縮小 | スペクトラムが隠れ、数値のラウドネスの全行が残る |
 | 再起動 | `standalone.json` の `lay_preset` と `spc_mode` が復元される |
 
-2026-11-26 に Linux（Xvfb :99、ALSA、Source: None、テストオシレーター -18 dBFS、48 kHz）で確認した結果は次のとおりです。
+白色またはピンク雑音を入力し、FFT に半透明の塗りと薄いピーク線が見えることを確認します。
+途中で音量を下げ、FFT のピーク線と RTA の目盛りが約 1.25 秒待ってから落ちることを確認します。
 
-| 項目 | 結果 |
-|---|---|
-| Spectrum を選ぶ | Standard と同じ 3 列と数値のラウドネスの下に、幅いっぱいのスペクトラムが表示された |
-| FFT 表示、1 kHz、-18 dBFS | 1 kHz に線が立ち、右上は 999 Hz / -18.6 dBFS だった（ビン間のため約 0.6 dB 低い） |
-| 1/3 oct 表示、1 kHz | 1k のバンドだけが -18 dB 付近まで伸び、ほかのバンドは下にあった |
-| 63 Hz | 64 Hz / -19.4 dBFS |
-| 125 Hz | 126 Hz / -18.6 dBFS |
-| 8 kHz | 8.00 kHz / -18.6 dBFS |
-| 640×440 に縮小 | スペクトラムは隠れ、Integrated、LRA、PLR、M max、S max、TP max、Time、Target の全行と 1/3 oct の選択は残った |
-| 1/3 oct → FFT の切り替え | 画面の選択が変わり、`standalone.json` の `spc_mode` が 1.0 から 0.0 に保存された |
-| 再起動 | `lay_preset` が 3.0（Spectrum）で保存され、Spectrum で起動した |
-| Reset | 自動テストで確認した。画面では消去から再描画までが約 171 ms のため目視できなかった |
-| Linux ホスト（`tools/host-tests/run.sh`） | clap-validator 44 件（34 件成功、10 件スキップ、失敗 0）、pluginval strictness 5（エディターを含む）が成功、Ardour のパススルーがビット一致 |
+8192 フレームずつの受信と 60 Hz の描画を合成し、準備期間後の毎秒 60 回の分析、針と同じ窓終端、リセット後の再同期、オーディオスレッドの無割り当てを確認するには、次のコマンドを実行します。
+
+```sh
+cargo test -p shirabe-plugin --lib spectrum_follows_every_steady_burst_paint_at_the_needle_frame -- --nocapture
+```
+
+FFT と RTA のアタック、リリース、ピーク保持、ビン中心のレベル、サンプルレート別の FFT 長を確認するには、次のコマンドを実行します。
+
+```sh
+cargo test -p shirabe-dsp --test spectrum -- --nocapture
+```
+
+48 kHz と 192 kHz の各 1000 回について、250 ms 遅延した窓の読み出し、FFT、帯域集計、表示応答にかかる時間を測るには、次のコマンドを実行します。
+描画と FFT プラン作成の時間は含みません。
+
+```sh
+cargo test --release -p shirabe-dsp --test spectrum spectrum_analysis_cpu_budget -- --ignored --nocapture
+```
+
+Linux VM（Xeon E5-2620 v4）での実測では、8192 フレームずつ受信する合成テストで、準備期間後の 3 秒間に毎秒 60 回ずつ更新しました。
+48 kHz の 1 kHz 付近のビン中心正弦波では、最初の描画（16.7 ms 後）で FFT は -0.56 dBFS、RTA は -0.14 dBFS になり、次の描画でどちらもほぼ 0 dBFS になりました。
+無音へのリリースは両方で 25.00 dB/s でした。
+
+測定した分析 1 回あたりの時間は次のとおりです。
+
+| サンプルレート | 中央値 | 95 パーセンタイル | 最大 |
+|---|---:|---:|---:|
+| 48 kHz | 0.290 ms | 0.486 ms | 1.064 ms |
+| 192 kHz | 0.815 ms | 1.364 ms | 2.265 ms |
+
+スタンドアロン版を Xvfb と ALSA の Dummy 出力で動かし、合成したピンク雑音と周波数掃引を再生して、FFT 曲線と塗り、ピーク線、RTA バーとピーク目盛りが表示されて変化することを確認しました。
+Xvfb での画面キャプチャには重複もあったため、実環境の描画レートの検証とは分けています。
 
 ### 表示言語の確認（日本語 / 英語）
 

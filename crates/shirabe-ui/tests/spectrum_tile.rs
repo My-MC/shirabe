@@ -75,9 +75,11 @@ fn render<'a>(mode: Mode, bins: &'a [f32], bands: &'a [f32; BAND_COUNT]) -> Spec
     SpectrumRender {
         mode,
         bins_db: bins,
+        bin_peaks_db: bins,
         sample_rate: 48_000.0,
         fft_size: FFT_SIZE,
         bands_db: bands,
+        band_peaks_db: bands,
         peak: Some((1000.0, -12.0)),
         ready: true,
         text: Text::new(Lang::English, true),

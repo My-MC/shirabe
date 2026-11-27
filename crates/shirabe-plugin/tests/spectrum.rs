@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use shirabe_dsp::spectrum::{SpectrumAnalyzer, SpectrumConfig, BAND_COUNT, FFT_SIZE};
+use shirabe_dsp::spectrum::{SpectrumAnalyzer, BAND_COUNT, FFT_SIZE};
 use shirabe_plugin::engine::MeterEngine;
 use shirabe_plugin::params::ShirabeParams;
 use shirabe_plugin::shared::SharedMeters;
@@ -27,13 +27,7 @@ fn rig(channels: usize) -> (MeterEngine, Arc<SharedMeters>) {
 }
 
 fn new_analyzer() -> SpectrumAnalyzer {
-    SpectrumAnalyzer::new(
-        RATE,
-        SpectrumConfig {
-            smoothing_seconds: 0.25,
-            ..SpectrumConfig::default()
-        },
-    )
+    SpectrumAnalyzer::new(RATE)
 }
 
 fn band_1k(analyzer: &SpectrumAnalyzer) -> f32 {

@@ -35,6 +35,7 @@ pub(crate) struct Snapshot {
     /// Exclusive end in audio frames since the last capture reset.
     pub frame: u64,
     pub scope_epoch: u64,
+    pub spectrum_epoch: u64,
     pub channels: [ChannelSample; MAX_CHANNELS],
     pub momentary: Option<f32>,
     pub short_term: Option<f32>,
@@ -46,6 +47,7 @@ struct Slot {
     stamp: AtomicU64,
     frame: AtomicU64,
     scope_epoch: AtomicU64,
+    spectrum_epoch: AtomicU64,
     values: [AtomicU32; VALUES],
 }
 
@@ -55,6 +57,7 @@ impl Slot {
             stamp: AtomicU64::new(0),
             frame: AtomicU64::new(0),
             scope_epoch: AtomicU64::new(0),
+            spectrum_epoch: AtomicU64::new(0),
             values: std::array::from_fn(|_| AtomicU32::new(0)),
         }
     }
@@ -66,6 +69,7 @@ impl Slot {
         fence(Release);
         self.frame.store(point.frame, Relaxed);
         self.scope_epoch.store(point.scope_epoch, Relaxed);
+        self.spectrum_epoch.store(point.spectrum_epoch, Relaxed);
         for (values, channel) in self.values.chunks_exact(CHANNEL_VALUES).zip(point.channels) {
             for (word, value) in values.iter().zip([
                 channel.level_db,
@@ -99,6 +103,7 @@ impl Slot {
         let point = Snapshot {
             frame: self.frame.load(Relaxed),
             scope_epoch: self.scope_epoch.load(Relaxed),
+            spectrum_epoch: self.spectrum_epoch.load(Relaxed),
             channels: std::array::from_fn(|i| ChannelSample {
                 level_db: load(i * CHANNEL_VALUES),
                 hold_db: load(i * CHANNEL_VALUES + 1),
